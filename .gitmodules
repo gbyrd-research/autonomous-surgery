@@ -1,0 +1,12 @@
+[submodule "third_party/RLBench"]
+	path = third_party/RLBench
+	url = https://github.com/CSCSX/RLBench.git
+[submodule "third_party/SPA"]
+	path = third_party/SPA
+	url = https://github.com/HaoyiZhu/SPA.git
+[submodule "third_party/act_peg"]
+	path = third_party/act_peg
+	url = git@github.com:gbyrd-research/act_peg.git
+[submodule "third_party/eia-vc"]
+	path = third_party/eia-vc
+	url = git@github.com:facebookresearch/eai-vc.git
