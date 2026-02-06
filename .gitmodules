@@ -7,6 +7,6 @@
 [submodule "third_party/act_peg"]
 	path = third_party/act_peg
 	url = git@github.com:gbyrd-research/act_peg.git
-[submodule "third_party/eia-vc"]
-	path = third_party/eia-vc
+[submodule "third_party/eai-vc"]
+	path = third_party/eai-vc
 	url = git@github.com:facebookresearch/eai-vc.git
