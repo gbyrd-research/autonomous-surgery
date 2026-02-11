@@ -243,8 +243,6 @@ def main(config):
         loss_train = AverageMeter()
 
         for cur_iter, batch in enumerate(tqdm(train_loader, desc=f"Train epoch {cur_epoch}")):
-            if cur_iter == 1:
-                break
             images, _, depths, robot_states, _, actions, actions_is_pad, texts = _unpack_batch(batch)
 
             images = images.to(config.device)
@@ -275,7 +273,7 @@ def main(config):
             loss_val = AverageMeter()
 
             with torch.no_grad():
-                for batch in tqdm(valid_loader, desc=f"Valid epoch {cur_epoch}"):
+                for cur_idx, batch in enumerate(tqdm(valid_loader, desc=f"Valid epoch {cur_epoch}")):
                     images, _, depths, robot_states, _, actions, _, texts = _unpack_batch(batch)
                     images = images.to(config.device)
                     depths = depths.to(config.device)

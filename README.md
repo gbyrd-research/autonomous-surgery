@@ -83,7 +83,7 @@ cd ../..
 pip install git+https://github.com/Farama-Foundation/Metaworld.git@master#egg=metaworld
 
 # RLBench
-wget --no-check-certificates https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+wget https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
 mkdir -p $COPPELIASIM_ROOT && tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz -C $COPPELIASIM_ROOT --strip-components 1
 rm -rf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
 cd third_party/RLBench
@@ -103,6 +103,12 @@ pip install -e .
 cd lift3d/models/point_next
 cd openpoints/cpp/pointnet2_batch
 pip install --no-build-isolation .
+# you may need to downgrade numpy before the below installation
+pip uninstall -y numpy
+pip install numpy==1.23.5
+# additionally, you will need to downgrade setuptools before these installations
+pip uninstall -y setuptools
+pip install "setuptools<60"
 cd ../subsampling
 pip install --no-build-isolation .
 cd ../pointops
@@ -116,7 +122,7 @@ cd ../../../../../..
 </details>
 
 <details>
-<summary>6. Quick gymnasium fix<summary>
+<summary>6. Quick gymnasium fix</summary>
 
 ```bash
 pip install -U gymnasium
@@ -168,10 +174,20 @@ python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m lift3d.tools.train_
 
 ## Generate simulation dataset
 
+To perform a sanity check training on simulation data, you can create a simulation dataset with the following command:
+
 ```bash
 python -m lift3d.scripts.gen_data_metaworld
 ```
 
+This will generate data for many different tasks. You can stop the generation after the first task is completely generated with ~30 episodes. Or, you can leave the script running to generate massive amounts of data. For a sanity check, one task dataset will be sufficient.
+
 ## Run Training with Representation-ACT
+
+To train on your generated data, run the following:
+
+```bash
+python -m lift3d.tools.train_representation_policy
+```
 
 
