@@ -39,8 +39,12 @@ export SANDBOX="<path/to/surpass.sandbox>"
 
 To enter into the sandbox directory interactively, you can run:
 
+**NOTE - !!!VERY IMPORTANT!!! : Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of storage space.
+
 ```bash
-apptainer shell --nv --writable $SANDBOX
+apptainer shell --nv --writable \
+    --bind <path/to/workspace_dir>:/home/<user>/<workspace_dir_name> \
+    $SANDBOX
 ```
 
 Enter the sandbox as above and then proceed to install the dependencies below.
@@ -51,7 +55,19 @@ Enter the sandbox as above and then proceed to install the dependencies below.
 ### Install Dependencies
 
 <details>
-<summary>1. Clone this repo and install the git submodules.</summary>
+<summary>1. Create a conda environment and cd into your workspace directory.</summary>
+
+```bash
+source /opt/conda/etc/profile.d/conda.sh
+conda create -n autonomous_surgery python=3.11
+conda activate autonomous_surgery
+
+cd </home/<user>/<workspace_dir_name>>
+```
+</details>
+
+<details>
+<summary>2. Clone this repo and install the git submodules.</summary>
 
 ```bash
 git clone git@github.com:gbyrd-research/autonomous-surgery.git
@@ -61,7 +77,7 @@ git submodule update --init --recursive
 </details>
 
 <details>
-<summary>2. Install dependencies of models</summary>
+<summary>3. Install dependencies of models</summary>
 
 ```bash
 # R3M（A Universal Visual Representation for Robot Manipulation）
@@ -83,7 +99,7 @@ cd ../..
 </details>
 
 <details>
-<summary>3. Install dependencies of simulation environments</summary>
+<summary>4. Install dependencies of simulation environments</summary>
 
 ```bash
 # Metaworld
@@ -102,7 +118,7 @@ cd ../..
 
 <details>
 
-<summary>4. Downgrade pip</summary>
+<summary>5. Downgrade pip</summary>
 
 ```bash
 pip install pip==23.3.1
@@ -112,7 +128,7 @@ pip install pip==23.3.1
 
 <details>
 
-<summary>5. Install repo as editable python package</summary>
+<summary>6. Install repo as editable python package</summary>
 
 ```bash
 pip install -e .
@@ -135,7 +151,7 @@ cd ../../../../../..
 </details>
 
 <details>
-<summary>6. Quick gymnasium fix</summary>
+<summary>7. Quick gymnasium fix</summary>
 
 ```bash
 pip install -U gymnasium
@@ -143,7 +159,7 @@ pip install -U gymnasium
 </details>
 
 <details>
-<summary>7. Install pytorch3d</summary>
+<summary>8. Install pytorch3d</summary>
 
 pip install --no-build-isolation \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
