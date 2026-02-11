@@ -1,0 +1,8 @@
+data
+outputs
+*.egg*
+*.pyc*
+.vscode
+lift3d/models/lift3d/ckpt/
+.vscode
+*__pycache__*
