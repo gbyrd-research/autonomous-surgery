@@ -135,7 +135,7 @@ To use the Visual Studio Code's debugger, the following must be done.</summary>
 2. Inside your singularity container and inside your conda environment, initialize `debugpy` on the file you wish to debug. Use the `--wait-for-client` flag to initialize the debugger and wait for a client to connect. For example:
 
 ```bash
-python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m lift3d.tools.train_policy_new
+python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m lift3d.tools.train_representation_policy
 ```
 3. Add something similar to the below in your `.vscode/launch.json` file:
 ```json
@@ -171,3 +171,7 @@ python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m lift3d.tools.train_
 ```bash
 python -m lift3d.scripts.gen_data_metaworld
 ```
+
+## Run Training with Representation-ACT
+
+

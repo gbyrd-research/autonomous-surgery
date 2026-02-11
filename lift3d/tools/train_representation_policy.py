@@ -243,7 +243,7 @@ def main(config):
         loss_train = AverageMeter()
 
         for cur_iter, batch in enumerate(tqdm(train_loader, desc=f"Train epoch {cur_epoch}")):
-            if cur_iter == 10:
+            if cur_iter == 1:
                 break
             images, _, depths, robot_states, _, actions, actions_is_pad, texts = _unpack_batch(batch)
 
