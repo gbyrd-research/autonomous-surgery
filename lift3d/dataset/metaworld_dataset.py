@@ -49,6 +49,7 @@ class MetaWorldDataset(torch.utils.data.Dataset):
         # Logger.log_notice(f'images shape: {self._images.shape}')
         assert self._images.shape[1] == 3
         self._point_clouds = zarr_root["data"]["point_clouds"][begin_index:end_index]
+        self._depth = zarr_root["data"]["depth"][begin_index:end_index]
         self._robot_states = zarr_root["data"]["robot_states"][begin_index:end_index]
         self._actions = zarr_root["data"]["actions"][begin_index:end_index]
         self._texts = zarr_root["data"]["texts"][begin_index:end_index]
@@ -105,6 +106,7 @@ class MetaWorldDatasetACT(MetaWorldDataset):
         Returns:
             image:        (3, H, W)
             point_cloud:  (...)
+            depth: (...)
             robot_state:  (state_dim,)
             dummy:        empty tensor
             actions:      (chunk_size, action_dim)
@@ -115,6 +117,7 @@ class MetaWorldDatasetACT(MetaWorldDataset):
         # Observation at time t
         image = torch.from_numpy(self._images[idx]).float()
         point_cloud = torch.from_numpy(self._point_clouds[idx]).float()
+        depth = torch.from_numpy(self._depth[idx]).float()
         robot_state = torch.from_numpy(self._robot_states[idx]).float()
         text = self._texts[idx]
 
@@ -138,13 +141,16 @@ class MetaWorldDatasetACT(MetaWorldDataset):
             else:
                 break
 
+        is_pad = ~action_mask
+
         return (
             image,
             point_cloud,
+            depth,
             robot_state,
             torch.zeros((0,)),  # placeholder
             actions,
-            action_mask,
+            is_pad,
             text,
         )
 

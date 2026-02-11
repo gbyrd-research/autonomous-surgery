@@ -40,15 +40,15 @@ def _unpack_batch(batch) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Any,
     if not isinstance(batch, (tuple, list)):
         raise ValueError(f"Batch must be tuple/list, got {type(batch)}")
 
-    if len(batch) == 6:
-        images, point_clouds, robot_states, raw_states, actions, texts = batch
+    if len(batch) == 7:
+        images, point_clouds, depth, robot_states, raw_states, actions, texts = batch
         is_pad = None
-    elif len(batch) == 7:
-        images, point_clouds, robot_states, raw_states, actions, texts, is_pad = batch
+    elif len(batch) == 8:
+        images, point_clouds, depth, robot_states, raw_states, actions, is_pad, texts = batch
     else:
-        raise ValueError(f"Unexpected batch size {len(batch)}; expected 6 or 7.")
+        raise ValueError(f"Unexpected batch size {len(batch)}; expected 7 or 8.")
 
-    return images, point_clouds, robot_states, raw_states, actions, texts, is_pad
+    return images, point_clouds, depth, robot_states, raw_states, actions, is_pad, texts
 
 
 def _to_item(v):
@@ -267,15 +267,15 @@ def main(config):
             iteration_info: Dict[str, Any] = {}
 
             # Unpack
-            images, point_clouds, robot_states, raw_states, actions, action_mask, texts = _unpack_batch(batch)
+            images, point_clouds, robot_states, raw_states, actions, actions_is_pad, texts = _unpack_batch(batch)
 
             # Move to device
             images = images.to(config.device)
             point_clouds = point_clouds.to(config.device)
             robot_states = robot_states.to(config.device)
             actions = actions.to(config.device, non_blocking=True)
-            if action_mask is not None:
-                action_mask = action_mask.to(config.device, non_blocking=True)
+            if actions_is_pad is not None:
+                actions_is_pad = actions_is_pad.to(config.device, non_blocking=True)
 
             # Forward
             # Note: Model should handle Normalization internally using injected stats
@@ -283,14 +283,14 @@ def main(config):
             preds = model(
                 images, point_clouds, robot_states, texts,
                 actions=actions,
-                is_pad=~action_mask,
+                is_pad=actions_is_pad,
             )
 
             # Loss Calculation
             # Flexible calling convention for different loss functions
             kwargs = {'kl_weight': kl_weight}
-            if action_mask is not None:
-                kwargs['is_pad'] = action_mask
+            if actions_is_pad is not None:
+                kwargs['is_pad'] = actions_is_pad
             
             # Helper to call loss func safely
             try:

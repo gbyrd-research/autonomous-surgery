@@ -37,7 +37,7 @@ conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
 
 # install main torch dependencies
-pip install torch==2.4.0 torchvision==0.19.0
+pip install torch==2.10.0 torchvision==0.25.0
 pip install --no-build-isolation \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 ```
