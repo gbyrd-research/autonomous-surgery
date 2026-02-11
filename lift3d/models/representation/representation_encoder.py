@@ -54,7 +54,6 @@ class DinoV3Encoder(nn.Module):
 
         self.resize_size = resize_size
         self.num_register_tokens = num_register_tokens
-        self.transform = self._make_transform()
 
         pretrained_model_name = valid_model_names[model_name]
         self.processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
@@ -359,8 +358,8 @@ class RepresentationEncoder(nn.Module):
         text: List[str]
     ):
         # image encoding tokens
-        resized_imgs = self.img_resize(images)
-        cls_tokens, reg_tokens, patch_tokens = self.image_encoder(resized_imgs)
+        # resized_imgs = self.img_resize(images)
+        cls_tokens, reg_tokens, patch_tokens = self.image_encoder(images)
 
         cls_tokens = self.img_cls_emb_to_model_emb_dim(cls_tokens)
         reg_tokens = self.img_reg_emb_to_model_emb_dim(reg_tokens)
