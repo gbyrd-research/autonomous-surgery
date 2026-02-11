@@ -17,17 +17,127 @@ This repo contains code for automating surgical tasks at Johns Hopkins Universit
 
 **NOTE: The below assumes you are logged into an HPC cluster and are logged into a GPU node within an interactive shell.**
 
-### Create singularity container
+<details>
+<summary>Create singularity container</summary>
 
-Copy the contents of the [install](./install) directory to the location where you wish to build your singularity container.
+Copy the contents of the [surpass.def](./surpass.def) file into a file of the same name in the location where you wish to build your singularity container.
 
-Build the container: 
+Build the container with: 
 
 ```bash
 apptainer build --sandbox surpass.sandbox surpass.def
 ```
+</details>
+
+<details>
+<summary>Enter the singularity container in an interactive terminal</summary>
+
+Export the location of your singularity sandbox directory.
+```bash
+export SANDBOX="<path/to/surpass.sandbox>"
+```
+
+To enter into the sandbox directory interactively, you can run:
+
+```bash
+apptainer shell --nv --writable $SANDBOX
+```
+
+Enter the sandbox as above and then proceed to install the dependencies below.
+
+</details>
+
 
 ### Install Dependencies
+
+<details>
+<summary>1. Clone this repo and install the git submodules.</summary>
+
+```bash
+git clone git@github.com:gbyrd-research/autonomous-surgery.git
+cd autonomous-surgery
+git submodule update --init --recursive
+```
+</details>
+
+<details>
+<summary>2. Install dependencies of models</summary>
+
+```bash
+# R3M（A Universal Visual Representation for Robot Manipulation）
+pip install git+https://github.com/facebookresearch/r3m.git --no-deps
+
+# CLIP (Contrastive Language-Image Pre-Training)
+pip install --no-build-isolation git+https://github.com/openai/CLIP.git --no-deps
+
+# VC1（Visual Cortex）
+cd third_party/eai-vc/vc_models
+pip install -e . --no-deps
+cd ../../..
+
+# SPA（3D SPatial-Awareness Enables Effective Embodied Representation）
+cd third_party/SPA 
+pip install --no-build-isolation . --no-deps
+cd ../..
+```
+</details>
+
+<details>
+<summary>3. Install dependencies of simulation environments</summary>
+
+```bash
+# Metaworld
+pip install git+https://github.com/Farama-Foundation/Metaworld.git@master#egg=metaworld
+
+# RLBench
+wget --no-check-certificates https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+mkdir -p $COPPELIASIM_ROOT && tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz -C $COPPELIASIM_ROOT --strip-components 1
+rm -rf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+cd third_party/RLBench
+pip install -e .
+cd ../..
+```
+
+</details>
+
+<details>
+
+<summary>4. Downgrade pip</summary>
+
+```bash
+pip install pip==23.3.1
+```
+
+</details>
+
+<details>
+
+<summary>5. Install repo as editable python package</summary>
+
+```bash
+pip install -e .
+
+# PointNext
+cd lift3d/models/point_next
+cd openpoints/cpp/pointnet2_batch
+pip install --no-build-isolation .
+cd ../subsampling
+pip install --no-build-isolation .
+cd ../pointops
+pip install --no-build-isolation .
+cd ../chamfer_dist
+pip install --no-build-isolation .
+cd ../emd
+pip install --no-build-isolation .
+cd ../../../../../..
+```
+
+</details>
+
+---
+
+
+
 <details>
 <summary>1. Create a conda environment and install necessary dependencies</summary>
 
@@ -116,7 +226,7 @@ cd ../../../../../..
 </details>
 
 <details>
-<summary>6. Quick gymnasium fix<summary>
+<summary>6. Quick gymnasium fix</summary>
 
 ```bash
 pip install -U gymnasium
@@ -125,6 +235,35 @@ pip install -U gymnasium
 
 
 # Running the code
+
+## Entering the sandbox to run the code
+
+You will need to include various environment variables when entering the singularity sandbox to run this code. Here is my (Grayson) setup. You will need to populate some of the environment variables with your unique entries.
+
+Reminder:
+
+```bash
+export SANDBOX="<path/to/surpass.sandbox>"
+```
+
+**NOTE: Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of space.
+
+```bash
+apptainer shell --nv --writable \
+    --bind <path/to/workspace_dir>:/home/<user>/<workspace_dir_name> \
+    --env COPPELIASIM_ROOT=${HOME}/Programs/CoppeliaSim \
+    --env LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH \
+    --env QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT \
+    --env DISPLAY=:99 \
+    --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    --env REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    --env MUJOCO_GL=egl \
+    --env PYOPENGL_PLATFORM=egl \
+    --env HF_TOKEN=<your_huggingface_token> \
+    --env HF_HOME=</home/<user>/<workspace_dir_name>/.hf> \
+    --env TORCH_HOME=</home/<user>/<workspace_dir_name>/.torch> \
+    $SANDBOX
+```
 
 ## Debugging
 <details>
