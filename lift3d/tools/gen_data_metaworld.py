@@ -81,6 +81,7 @@ def main(args):
     total_count = 0
     img_arrays = []
     point_cloud_arrays = []
+    depth_arrays = []
     robot_state_arrays = []
     raw_state_arrays = []
     action_arrays = []
@@ -106,6 +107,7 @@ def main(args):
         ep_success_times = 0
         img_arrays_sub = []
         point_cloud_arrays_sub = []
+        depth_cloud_arrays_sub = []
         robot_state_arrays_sub = []
         raw_state_arrays_sub = []
         action_arrays_sub = []
@@ -120,6 +122,7 @@ def main(args):
             obs_img = obs_dict["image"]
             obs_robot_state = obs_dict["robot_state"]
             obs_point_cloud = obs_dict["point_cloud"]
+            obs_depth = obs_dict["depth"]
 
             action = mw_policy.get_action(raw_state)
             obs_dict, reward, terminated, truncated, env_info = env.step(action)
@@ -128,6 +131,7 @@ def main(args):
 
             img_arrays_sub.append(obs_img)
             point_cloud_arrays_sub.append(obs_point_cloud)
+            depth_cloud_arrays_sub.append(obs_depth)
             robot_state_arrays_sub.append(obs_robot_state)
             raw_state_arrays_sub.append(raw_state)
             action_arrays_sub.append(action)
@@ -183,6 +187,7 @@ def main(args):
             )  # the index of the last step of the episode
             img_arrays.extend(copy.deepcopy(img_arrays_sub))
             point_cloud_arrays.extend(copy.deepcopy(point_cloud_arrays_sub))
+            depth_arrays.extend(copy.deepcopy(depth_cloud_arrays_sub))
             robot_state_arrays.extend(copy.deepcopy(robot_state_arrays_sub))
             action_arrays.extend(copy.deepcopy(action_arrays_sub))
             reward_arrays.extend(copy.deepcopy(reward_arrays_sub))
@@ -194,6 +199,7 @@ def main(args):
             del (
                 img_arrays_sub,
                 point_cloud_arrays_sub,
+                depth_cloud_arrays_sub,
                 robot_state_arrays_sub,
                 action_arrays_sub,
                 reward_arrays_sub,
@@ -218,6 +224,7 @@ def main(args):
     if img_arrays.shape[1] == 3:  # make channel last
         img_arrays = np.transpose(img_arrays, (0, 2, 3, 1))
     point_cloud_arrays = np.stack(point_cloud_arrays, axis=0)
+    depth_arrays = np.stack(depth_arrays, axis=0)
     robot_state_arrays = np.stack(robot_state_arrays, axis=0)
     raw_state_arrays = np.stack(raw_state_arrays, axis=0)
     action_arrays = np.stack(action_arrays, axis=0)
@@ -226,7 +233,7 @@ def main(args):
     texts = np.array(texts, dtype=object)
 
     # Save data
-    Logger.log_info("Saving data to zarr file...", end="", flush=True)
+    Logger.log_info("Saving data to zarr file...")
     zarr_dir = pathlib.Path(args.save_dir) / f"{task_name}_{args.camera_name}.zarr"
     zarr_root = zarr.group(zarr_dir)
     zarr_data = zarr_root.create_group("data", overwrite=True)
@@ -241,6 +248,11 @@ def main(args):
         100,
         point_cloud_arrays.shape[1],
         point_cloud_arrays.shape[2],
+    )
+    depth_cloud_chunk_size = (
+        100,
+        depth_arrays.shape[1],
+        depth_arrays.shape[2]
     )
     robot_state_chunk_size = (100, robot_state_arrays.shape[1])
     action_chunk_size = (100, action_arrays.shape[1])
@@ -258,6 +270,13 @@ def main(args):
         chunks=point_cloud_chunk_size,
         dtype="float32",
         compressor=compressor,
+    )
+    zarr_data.create_dataset(
+        "depth",
+        data=depth_arrays,
+        chunks=depth_cloud_chunk_size,
+        dtype="float32",
+        compressor=compressor
     )
     zarr_data.create_dataset(
         "robot_states",

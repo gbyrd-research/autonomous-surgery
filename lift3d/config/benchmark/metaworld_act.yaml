@@ -2,8 +2,7 @@ name: MetaWorld
 
 dataset_instantiate_config:
   _target_: lift3d.dataset.MetaWorldDatasetACT
-  # data_dir: ${dataset_dir}
-  # split: validation
+  chunk_size: 50
 
 evaluator_instantiate_config:
   _target_: lift3d.envs.MetaWorldEvaluator

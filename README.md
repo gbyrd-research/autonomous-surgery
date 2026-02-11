@@ -37,7 +37,7 @@ conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
 
 # install main torch dependencies
-pip install torch==2.4.0 torchvision==0.19.0
+pip install torch==2.10.0 torchvision==0.25.0
 pip install --no-build-isolation \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 ```
@@ -61,16 +61,16 @@ git submodule update --init --recursive
 pip install git+https://github.com/facebookresearch/r3m.git --no-deps
 
 # CLIP (Contrastive Language-Image Pre-Training)
-pip install git+https://github.com/openai/CLIP.git --no-deps
+pip install --no-build-isolation git+https://github.com/openai/CLIP.git --no-deps
 
 # VC1（Visual Cortex）
 cd third_party/eai-vc/vc_models
-pip install -e .  --no-deps
+pip install -e . --no-deps
 cd ../../..
 
 # SPA（3D SPatial-Awareness Enables Effective Embodied Representation）
 cd third_party/SPA 
-pip install -e . --no-deps
+pip install --no-build-isolation . --no-deps
 cd ../..
 ```
 </details>
@@ -115,6 +115,17 @@ cd ../../../../../..
 ```
 </details>
 
+<details>
+<summary>6. Quick gymnasium fix<summary>
+
+```bash
+pip install -U gymnasium
+```
+</details>
+
+
+# Running the code
+
 ## Debugging
 <details>
 <summary>
@@ -124,7 +135,7 @@ To use the Visual Studio Code's debugger, the following must be done.</summary>
 2. Inside your singularity container and inside your conda environment, initialize `debugpy` on the file you wish to debug. Use the `--wait-for-client` flag to initialize the debugger and wait for a client to connect. For example:
 
 ```bash
-python -m debugpy --listen 0.0.0.0:5678 --wait-for-client eval.py
+python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m lift3d.tools.train_policy_new
 ```
 3. Add something similar to the below in your `.vscode/launch.json` file:
 ```json
@@ -154,3 +165,9 @@ python -m debugpy --listen 0.0.0.0:5678 --wait-for-client eval.py
 ```
 4. Click on the debug icon in VS Code and press the play button after selecting `Attach to Singularity Python`
 </details>
+
+## Generate simulation dataset
+
+```bash
+python -m lift3d.scripts.gen_data_metaworld
+```

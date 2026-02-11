@@ -369,7 +369,7 @@ class Lift3dCLIP(nn.Module):
             clip_ckpt_path = hf_hub_download(
                 repo_id=repo_id, filename=filename, cache_dir=cache_dir
             )
-        clip_base_dict = torch.load(clip_ckpt_path)
+        clip_base_dict = torch.load(clip_ckpt_path, weights_only=False)
         self.pos_embed_2d = clip_base_dict.state_dict()[
             "visual.positional_embedding"
         ].unsqueeze(0)
