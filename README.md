@@ -15,10 +15,23 @@ This repo contains code for automating surgical tasks at Johns Hopkins Universit
 
 ## Setting Up HPC Cluster Environment
 
+<details>
+<summary>1. Procure an interactive node</summary>
+
+```bash
+srun -p a100 --gres=gpu:1 --pty bash
+```
+
+This should pop you into a GPU node with an A100. You can check if you have access to a GPU with `nvidia-smi`.
+
+</details>
+
+<br>
+
 **NOTE: The below assumes you are logged into an HPC cluster and are logged into a GPU node within an interactive shell.**
 
 <details>
-<summary>Create singularity container</summary>
+<summary>2. Create singularity container</summary>
 
 Copy the contents of the [surpass.def](./surpass.def) file into a file of the same name in the location where you wish to build your singularity container.
 
@@ -30,7 +43,7 @@ apptainer build --sandbox surpass.sandbox surpass.def
 </details>
 
 <details>
-<summary>Enter the singularity container in an interactive terminal</summary>
+<summary>3. Enter the singularity container in an interactive terminal</summary>
 
 Export the location of your singularity sandbox directory.
 ```bash
@@ -55,12 +68,14 @@ Enter the sandbox as above and then proceed to install the dependencies below.
 ### Install Dependencies
 
 <details>
-<summary>1. Create a conda environment and cd into your workspace directory.</summary>
+<summary>1. Create a conda environment, immediately install Lerobot, and cd into your workspace directory.</summary>
 
 ```bash
 source /opt/conda/etc/profile.d/conda.sh
 conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
+
+pip install lerobot==0.3.3
 
 cd </home/<user>/<workspace_dir_name>>
 ```
@@ -161,8 +176,10 @@ pip install -U gymnasium
 <details>
 <summary>8. Install pytorch3d</summary>
 
+```bash
 pip install --no-build-isolation \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+```
 
 </details>
 

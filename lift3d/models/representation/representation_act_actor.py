@@ -227,7 +227,7 @@ class RepresentationACTActor(nn.Module):
         # training dimensions
         robot_states_norm = self.normalize_qpos(robot_states)
 
-        global_token, tokens = self.representation_encoder(images, depth, robot_states, texts)
+        global_token, tokens = self.representation_encoder(images, depth, robot_states_norm, texts)
         bs = global_token.shape[0]
 
         # prior always available

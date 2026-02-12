@@ -82,7 +82,7 @@ class CholecystectomyACTDataset(Dataset):
     ):
         super().__init__()
 
-        self.dataset = LeRobotDataset("jchen396/openh_test")
+        self.dataset = LeRobotDataset(dataset_root)
         self.window_size = window_size
 
         if image_keys is None:
@@ -142,6 +142,6 @@ class CholecystectomyACTDataset(Dataset):
         }
     
 if __name__=="__main__":
-    act_dataset = CholecystectomyACTDataset(dataset_root=".hf/lerobot/jchen396/openh_test")
+    act_dataset = CholecystectomyACTDataset(dataset_root="jchen396/openh_test")
     entry = act_dataset[0]
     pass
