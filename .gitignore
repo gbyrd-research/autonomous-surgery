@@ -3,6 +3,6 @@ outputs
 *.egg*
 *.pyc*
 .vscode
-lift3d/models/lift3d/ckpt/
+autonomous_surgery/models/autonomous_surgery/ckpt/
 .vscode
 *__pycache__*

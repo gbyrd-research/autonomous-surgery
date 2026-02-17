@@ -10,12 +10,12 @@ def _read_install_requires():
 
 
 setup(
-    name='lift3d',
+    name='autonomous_surgery',
     version='1.0',
     author='CSCSX',
     author_email='cscsxiang@gmail.com',
-    url='https://github.com/PKU-HMI-Lab/EAI-Representation-Learning/tree/lift3d-merge',
-    description='Lift3D Foundation Policy: Lifting 2D Large-Scale Pretrained Models for Robust 3D Robotic Manipulation',
+    url='https://github.com/PKU-HMI-Lab/EAI-Representation-Learning/tree/autonomous_surgery-merge',
+    description='autonomous_surgery Foundation Policy: Lifting 2D Large-Scale Pretrained Models for Robust 3D Robotic Manipulation',
     long_description=pathlib.Path('README.md').open().read(),
     long_description_content_type='text/markdown',
     keywords=[
@@ -24,7 +24,7 @@ setup(
         'Representation Learning',
     ],
     license='MIT License',
-    packages=find_packages(include='lift3d.*'),
+    packages=find_packages(include='autonomous_surgery.*'),
     include_package_data=True,
     zip_safe=False,
     install_requires=_read_install_requires(),
