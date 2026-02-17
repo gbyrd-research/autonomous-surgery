@@ -54,7 +54,6 @@ class DinoV3Encoder(nn.Module):
 
         self.resize_size = resize_size
         self.num_register_tokens = num_register_tokens
-        self.transform = self._make_transform()
 
         pretrained_model_name = valid_model_names[model_name]
         self.processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
@@ -67,19 +66,15 @@ class DinoV3Encoder(nn.Module):
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
         self.feature_extractor.eval()
-
-    def _make_transform(self):
-        resize = v2.Resize((self.resize_size, self.resize_size), antialias=True)
-        to_float = v2.ToDtype(torch.float32, scale=True)
-        normalize = v2.Normalize(
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
-        )
-        return v2.Compose([resize, to_float, normalize])
     
     def __call__(self, images: torch.Tensor, *args: Any, **kwds: Any) -> Any:
+        inputs = self.processor(
+            images=images, 
+            return_tensors="pt"
+        )
+        inputs = {k: v.to(self.feature_extractor.device) for k, v in inputs.items()}
         with torch.no_grad():
-            outputs = self.feature_extractor(pixel_values=self.transform(images))
+            outputs = self.feature_extractor(**inputs)
         outputs = outputs.last_hidden_state
 
         # we will return the cls token, register tokens, and img tokens
@@ -363,8 +358,8 @@ class RepresentationEncoder(nn.Module):
         text: List[str]
     ):
         # image encoding tokens
-        resized_imgs = self.img_resize(images)
-        cls_tokens, reg_tokens, patch_tokens = self.image_encoder(resized_imgs)
+        # resized_imgs = self.img_resize(images)
+        cls_tokens, reg_tokens, patch_tokens = self.image_encoder(images)
 
         cls_tokens = self.img_cls_emb_to_model_emb_dim(cls_tokens)
         reg_tokens = self.img_reg_emb_to_model_emb_dim(reg_tokens)

@@ -112,7 +112,7 @@ def get_dataloaders(config):
         split="validation",
     )
 
-    DataLoaderConstuctor = functools.partial(
+    DataLoaderConstuctorTrain = functools.partial(
         torch.utils.data.DataLoader,
         batch_size=config.dataloader.batch_size,
         num_workers=config.dataloader.num_workers,
@@ -121,9 +121,18 @@ def get_dataloaders(config):
         drop_last=config.dataloader.drop_last,
     )
 
+    DataLoaderConstuctorVal = functools.partial(
+        torch.utils.data.DataLoader,
+        batch_size=config.dataloader.batch_size,
+        num_workers=config.dataloader.num_workers,
+        shuffle=False,
+        pin_memory=config.dataloader.pin_memory,
+        drop_last=False,
+    )
+
     return (
-        DataLoaderConstuctor(train_dataset),
-        DataLoaderConstuctor(valid_dataset),
+        DataLoaderConstuctorTrain(train_dataset),
+        DataLoaderConstuctorVal(valid_dataset),
         train_dataset,
         valid_dataset,
     )
@@ -211,6 +220,15 @@ def main(config):
     ).to(config.device)
     set_model_normalization_stats(model, train_dataset, config)
 
+    # configure kl_weight
+    kl_weight = OmegaConf.select(config, "train.kl_weight", default=None)
+    if kl_weight is None:
+        kl_weight = OmegaConf.select(config, "agent.kl_weight", default=None)
+    if kl_weight is None:
+        kl_weight = OmegaConf.select(config, "agent.instantiate_config.kl_weight", default=10.0)
+    kl_weight = float(kl_weight)
+    Logger.log_info(f"KL weight: {colored(kl_weight, 'red')}")
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.train.learning_rate,
@@ -243,7 +261,7 @@ def main(config):
         loss_train = AverageMeter()
 
         for cur_iter, batch in enumerate(tqdm(train_loader, desc=f"Train epoch {cur_epoch}")):
-            if cur_iter == 10:
+            if cur_iter == 1:
                 break
             images, _, depths, robot_states, _, actions, actions_is_pad, texts = _unpack_batch(batch)
 
@@ -256,7 +274,7 @@ def main(config):
             preds = model(images, depths, robot_states, texts, actions, actions_is_pad)
 
             actions_norm = (actions - model.action_mean) / model.action_std
-            loss, loss_dict = call(config.benchmark.loss_func, preds, actions_norm, actions_is_pad)
+            loss, loss_dict = call(config.benchmark.loss_func, preds, actions_norm, actions_is_pad, kl_weight=kl_weight)
 
             optimizer.zero_grad()
             loss.backward()
@@ -275,15 +293,16 @@ def main(config):
             loss_val = AverageMeter()
 
             with torch.no_grad():
-                for batch in tqdm(valid_loader, desc=f"Valid epoch {cur_epoch}"):
-                    images, _, depths, robot_states, _, actions, _, texts = _unpack_batch(batch)
+                for cur_idx, batch in enumerate(tqdm(valid_loader, desc=f"Valid epoch {cur_epoch}")):
+                    images, _, depths, robot_states, _, actions, actions_is_pad, texts = _unpack_batch(batch)
                     images = images.to(config.device)
                     depths = depths.to(config.device)
                     robot_states = robot_states.to(config.device)
                     actions = actions.to(config.device)
 
                     preds = model(images, depths, robot_states, texts)
-                    loss, loss_dict = call(config.benchmark.loss_func, preds, actions)
+                    actions_norm = (actions - model.action_mean) / model.action_std
+                    loss, loss_dict = call(config.benchmark.loss_func, preds, actions_norm, actions_is_pad, kl_weight=kl_weight)
                     loss_val.update(loss.item(), actions.size(0))
 
             val_loss_history.append(loss_val.avg)
@@ -321,7 +340,7 @@ def main(config):
             )
 
     # <<< FINAL SAVE
-    save_loss_plot(train_loss_history, val_loss_history, local_run_output_dir)
+    save_loss_plot(train_loss_history, val_loss_history, val_epochs, local_run_output_dir)
 
     with open(local_run_output_dir / "loss_history.json", "w") as f:
         json.dump(

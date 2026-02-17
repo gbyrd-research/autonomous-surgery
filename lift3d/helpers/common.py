@@ -3,6 +3,7 @@ import pathlib
 import random
 import sys
 import uuid
+import shutil
 
 import cv2
 import hydra
@@ -108,7 +109,8 @@ class Logger:
 
     @staticmethod
     def print_seperator(char="-", color="cyan"):
-        cprint(char * os.get_terminal_size().columns, color)
+        width = shutil.get_terminal_size(fallback=(120, 20)).columns
+        cprint(char * width, color)
 
 
 def get_env_variable(var_name):

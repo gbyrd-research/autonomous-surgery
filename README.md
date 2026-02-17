@@ -15,10 +15,23 @@ This repo contains code for automating surgical tasks at Johns Hopkins Universit
 
 ## Setting Up HPC Cluster Environment
 
+<details>
+<summary>1. Procure an interactive node</summary>
+
+```bash
+srun -p a100 --gres=gpu:1 --pty bash
+```
+
+This should pop you into a GPU node with an A100. You can check if you have access to a GPU with `nvidia-smi`.
+
+</details>
+
+<br>
+
 **NOTE: The below assumes you are logged into an HPC cluster and are logged into a GPU node within an interactive shell.**
 
 <details>
-<summary>Create singularity container</summary>
+<summary>2. Create singularity container</summary>
 
 Copy the contents of the [surpass.def](./surpass.def) file into a file of the same name in the location where you wish to build your singularity container.
 
@@ -30,7 +43,7 @@ apptainer build --sandbox surpass.sandbox surpass.def
 </details>
 
 <details>
-<summary>Enter the singularity container in an interactive terminal</summary>
+<summary>3. Enter the singularity container in an interactive terminal</summary>
 
 Export the location of your singularity sandbox directory.
 ```bash
@@ -39,11 +52,37 @@ export SANDBOX="<path/to/surpass.sandbox>"
 
 To enter into the sandbox directory interactively, you can run:
 
+**NOTE - !!!VERY IMPORTANT!!! : Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of storage space.
+
 ```bash
-apptainer shell --nv --writable $SANDBOX
+apptainer shell --nv --writable \
+    --bind <path/to/workspace_dir>:/home/<user>/<workspace_dir_name> \
+    $SANDBOX
 ```
 
 Enter the sandbox as above and then proceed to install the dependencies below.
+
+</details>
+
+<details>
+<summary>4. Configure ssh agent if not already running</summary>
+
+```bash
+ssh-add -l
+```
+
+If you get: Could not open a connection to your authentication agent then:
+
+```bash
+# Turn on Agent
+eval "$(ssh-agent -s)"
+
+# Add key
+ssh-add ~/.ssh/id_rsa
+
+# If successful, you will see a fingerprint of your key instead of the error message.
+ssh-add -l
+```
 
 </details>
 
@@ -51,105 +90,19 @@ Enter the sandbox as above and then proceed to install the dependencies below.
 ### Install Dependencies
 
 <details>
-<summary>1. Clone this repo and install the git submodules.</summary>
-
-```bash
-git clone git@github.com:gbyrd-research/autonomous-surgery.git
-cd autonomous-surgery
-git submodule update --init --recursive
-```
-</details>
-
-<details>
-<summary>2. Install dependencies of models</summary>
-
-```bash
-# R3M（A Universal Visual Representation for Robot Manipulation）
-pip install git+https://github.com/facebookresearch/r3m.git --no-deps
-
-# CLIP (Contrastive Language-Image Pre-Training)
-pip install --no-build-isolation git+https://github.com/openai/CLIP.git --no-deps
-
-# VC1（Visual Cortex）
-cd third_party/eai-vc/vc_models
-pip install -e . --no-deps
-cd ../../..
-
-# SPA（3D SPatial-Awareness Enables Effective Embodied Representation）
-cd third_party/SPA 
-pip install --no-build-isolation . --no-deps
-cd ../..
-```
-</details>
-
-<details>
-<summary>3. Install dependencies of simulation environments</summary>
-
-```bash
-# Metaworld
-pip install git+https://github.com/Farama-Foundation/Metaworld.git@master#egg=metaworld
-
-# RLBench
-wget --no-check-certificates https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-mkdir -p $COPPELIASIM_ROOT && tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz -C $COPPELIASIM_ROOT --strip-components 1
-rm -rf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-cd third_party/RLBench
-pip install -e .
-cd ../..
-```
-
-</details>
-
-<details>
-
-<summary>4. Downgrade pip</summary>
-
-```bash
-pip install pip==23.3.1
-```
-
-</details>
-
-<details>
-
-<summary>5. Install repo as editable python package</summary>
-
-```bash
-pip install -e .
-
-# PointNext
-cd lift3d/models/point_next
-cd openpoints/cpp/pointnet2_batch
-pip install --no-build-isolation .
-cd ../subsampling
-pip install --no-build-isolation .
-cd ../pointops
-pip install --no-build-isolation .
-cd ../chamfer_dist
-pip install --no-build-isolation .
-cd ../emd
-pip install --no-build-isolation .
-cd ../../../../../..
-```
-
-</details>
-
----
-
-
-
-<details>
-<summary>1. Create a conda environment and install necessary dependencies</summary>
+<summary>1. Create a conda environment, immediately install Lerobot, and cd into your workspace directory.</summary>
 
 ```bash
 source /opt/conda/etc/profile.d/conda.sh
 conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
 
-# install main torch dependencies
-pip install torch==2.10.0 torchvision==0.25.0
-pip install --no-build-isolation \
-    "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+# lerobot must be installed before installing the downstream dependencies
+# because installing lerobot after will change the pytorch installation which
+# will break the downstream dependencies
+pip install lerobot==0.3.3
+
+cd </home/<user>/<workspace_dir_name>>
 ```
 </details>
 
@@ -193,7 +146,8 @@ cd ../..
 pip install git+https://github.com/Farama-Foundation/Metaworld.git@master#egg=metaworld
 
 # RLBench
-wget --no-check-certificates https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
+export COPPELIASIM_ROOT=${HOME}/Programs/CoppeliaSim
+wget --no-check-certificate https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
 mkdir -p $COPPELIASIM_ROOT && tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz -C $COPPELIASIM_ROOT --strip-components 1
 rm -rf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
 cd third_party/RLBench
@@ -204,7 +158,18 @@ cd ../..
 </details>
 
 <details>
-<summary>5. Install the lift3d package.</summary>
+
+<summary>5. Downgrade pip</summary>
+
+```bash
+pip install pip==23.3.1
+```
+
+</details>
+
+<details>
+
+<summary>6. Install repo as editable python package</summary>
 
 ```bash
 pip install -e .
@@ -223,15 +188,27 @@ cd ../emd
 pip install --no-build-isolation .
 cd ../../../../../..
 ```
+
 </details>
 
 <details>
-<summary>6. Quick gymnasium fix</summary>
+<summary>7. Quick gymnasium fix</summary>
 
 ```bash
 pip install -U gymnasium
 ```
 </details>
+
+<details>
+<summary>8. Install pytorch3d</summary>
+
+```bash
+pip install --no-build-isolation \
+    "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+```
+
+</details>
+
 
 
 # Running the code
