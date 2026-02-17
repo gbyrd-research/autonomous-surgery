@@ -75,14 +75,18 @@ class CholecystectomyACTDataset(Dataset):
 
     def __init__(
         self,
-        dataset_root: str | Path,
+        repo_id: str,
+        root: str | Path,
+        tolerance_s: float,
         split: str = "train",
         window_size: int = 16,
         image_keys=None,
     ):
         super().__init__()
 
-        self.dataset = LeRobotDataset(dataset_root)
+        self.dataset = LeRobotDataset(
+            repo_id=repo_id, root=root, tolerance_s=tolerance_s
+        )
         self.window_size = window_size
 
         if image_keys is None:
@@ -142,6 +146,10 @@ class CholecystectomyACTDataset(Dataset):
         }
     
 if __name__=="__main__":
-    act_dataset = CholecystectomyACTDataset(dataset_root="jchen396/openh_test")
+    act_dataset = CholecystectomyACTDataset(
+        repo_id="surpass/cholecystectomy", 
+        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/cholecystectomy",
+        tolerance_s=0.0333
+    )
     entry = act_dataset[0]
     pass
