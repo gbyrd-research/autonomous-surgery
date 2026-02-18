@@ -86,8 +86,60 @@ ssh-add -l
 
 </details>
 
+## Setting Up Docker Container
 
-### Install Dependencies
+<details>
+<summary>1. Configure ssh agent if not already running</summary>
+
+```bash
+ssh-add -l
+```
+
+If you get: Could not open a connection to your authentication agent then:
+
+```bash
+# Turn on Agent
+eval "$(ssh-agent -s)"
+
+# Add key
+ssh-add ~/.ssh/id_rsa
+
+# If successful, you will see a fingerprint of your key instead of the error message.
+ssh-add -l
+```
+</details>
+
+<details>
+<summary>2. Build Docker image.</summary>
+
+```bash
+docker build -t autonomous_surgery:latest .
+```
+
+</details>
+
+<details>
+<summary>3. Run docker container from autonomous_surgery Docker image.</summary>
+
+```bash
+docker compose up
+```
+
+</details>
+
+<details>
+<summary>4. Enter the container in interactive mode.</summary>
+
+```bash
+docker exec -it autonomous_surgery /bin/bash
+```
+
+</details>
+
+Proceed to `Install Dependencies` below.
+
+
+## Install Dependencies
 
 <details>
 <summary>1. Create a conda environment, immediately install Lerobot, and cd into your workspace directory.</summary>
@@ -109,11 +161,18 @@ cd </home/<user>/<workspace_dir_name>>
 <details>
 <summary>2. Clone this repo and install the git submodules.</summary>
 
+**NOTE:** If you are running with a docker container, this step is different. See below.
+
 ```bash
 git clone git@github.com:gbyrd-research/autonomous-surgery.git
 cd autonomous-surgery
 git submodule update --init --recursive
 ```
+
+**Docker container version**
+
+
+
 </details>
 
 <details>
