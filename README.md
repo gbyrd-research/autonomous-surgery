@@ -171,7 +171,11 @@ git submodule update --init --recursive
 
 **Docker container version**
 
+You **MUST** run the following on the host machine **outside of the docker container** before entering the container. Otherwise, you will run into challenges cloning the submodules due to user name mismatches and dubious ownership errors.
 
+```
+git submodule update --init --recursive
+```
 
 </details>
 
