@@ -1,6 +1,3 @@
-[submodule "third_party/eai-vc"]
-	path = third_party/eai-vc
-	url = git@github.com:facebookresearch/eai-vc.git
 [submodule "lift3d/models/point_next/openpoints"]
 	path = lift3d/models/point_next/openpoints
 	url = git@github.com:jiayueru/openpoints.git
