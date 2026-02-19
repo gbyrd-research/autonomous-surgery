@@ -1,4 +1,36 @@
-<div align="center">
+1. Build the docker image.
+
+```bash
+docker build -t autonomous_surgery:latest .
+```
+
+2. Add the various environment variables specified in the `docker-compose.yaml` file. Next, run a docker container from the built image and enter it interactively.
+
+```bash
+chmod +x run_container.sh
+./run_container.sh
+```
+
+3. Inside the container, create a conda environment and install dependencies.
+
+```bash
+conda create -n autonomous_surgery python=3.11
+conda activate autonomous_surgery
+pip install -r requirements.txt
+pip install -e .
+conda install -c conda-forge ffmpeg
+```
+
+4. Assuming your lerobot dataset has been downloaded, you can run the following:
+
+```bash
+python -m autonomous_surgery.tools.train_representation_policy
+```
+
+
+
+
+<!-- <div align="center">
 
 # SURPASS: Autonomous Surgery
 
@@ -349,4 +381,4 @@ python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m autonomous_surgery.
 
 ```bash
 python -m autonomous_surgery.scripts.gen_data_metaworld
-```
+``` -->

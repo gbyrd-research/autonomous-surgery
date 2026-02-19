@@ -19,11 +19,14 @@ services:
       - SSH_AUTH_SOCK=/ssh-agent
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-3
+      - HF_HOME=/workspace/.hf
+      - HF_TOKEN=<your_huggingface_token_here>
+
     volumes:
       - ./:/workspace
       - conda_envs:/opt/conda/envs
       - ${SSH_AUTH_SOCK}:/ssh-agent
+      - ./.hf:/.hf
 
     working_dir: /workspace
     stdin_open: true

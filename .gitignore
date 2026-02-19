@@ -6,3 +6,4 @@ outputs
 autonomous_surgery/models/autonomous_surgery/ckpt/
 .vscode
 *__pycache__*
+.hf

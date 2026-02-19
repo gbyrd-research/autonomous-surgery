@@ -1,32 +1,17 @@
-[build-system]
-requires = ["setuptools>=61", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "autonomous-surgery"
-version = "1.0"
-description = "JHU ARCADE Lab Autonomous Surgery"
-readme = { file = "README.md", content-type = "text/markdown" }
-authors = [
-    { name = "CSCSX", email = "cscsxiang@gmail.com" }
-]
-license = { text = "MIT License" }
+version = "1.0.0"
 requires-python = ">=3.9"
-keywords = [
-    "Robotics",
-    "Embodied Intelligence",
-    "Representation Learning"
-]
 
-# 🔴 You must manually copy requirements here
 dependencies = [
+    "torch>=2.1",
+    "torchvision",
+    "transformers",
+    "datasets",
+    "accelerate",
+    "hydra-core",
+    "wandb",
+    "tqdm",
+    "einops",
+    "numpy",
 ]
-
-[project.urls]
-
-[tool.setuptools]
-include-package-data = true
-zip-safe = false
-
-[tool.setuptools.packages.find]
-include = ["autonomous_surgery.*"]
