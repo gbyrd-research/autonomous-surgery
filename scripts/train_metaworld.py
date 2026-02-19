@@ -11,7 +11,7 @@ AGENTS = [
     ('pointnet_bnmlp', 16),
     ('point_next_bnmlp', 16),
     ('pointnet_plus_plus_bnmlp', 16),
-    ('lift3d_bnmlp', 16),
+    ('autonomous_surgery_bnmlp', 16),
 ]
 
 TASKS = [
@@ -30,7 +30,7 @@ def test_codebase():
         for task in TASKS:
             for camera in CAMERAS:
                 cmd = [
-                    'python', '-m', 'lift3d.tools.train_policy',
+                    'python', '-m', 'autonomous_surgery.tools.train_policy',
                     '--config-name=train_metaworld',
                     f'agent={agent}',
                     f'task_name={task}',
