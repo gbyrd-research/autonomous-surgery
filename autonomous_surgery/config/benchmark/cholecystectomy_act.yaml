@@ -1,0 +1,10 @@
+name: MetaWorld
+
+dataset_instantiate_config:
+  _target_: autonomous_surgery.dataset.CholecystectomyACTDataset
+  repo_id: surpass/cholecystectomy_dummy
+  root: /home/gbyrd/SURPASS/.hf/lerobot/surpass/cholecystectomy_dummy
+  tolerance_s: 1e-4
+
+loss_func:
+  _target_: autonomous_surgery.loss.act_vae_loss.act_vae_loss
