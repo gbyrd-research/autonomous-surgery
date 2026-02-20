@@ -11,10 +11,14 @@ normalization stats (including depth geometry stats).
 
 from __future__ import annotations
 
+from datetime import datetime
+import hashlib
+import json
 import functools
 import json
 import os
 import pathlib
+from pathlib import Path
 from typing import Optional, Tuple, Any, Dict
 
 import hydra
@@ -54,6 +58,71 @@ from autonomous_surgery.helpers.pytorch import AverageMeter
 #     return images, point_clouds, depth, robot_states, raw_states, actions, is_pad, texts
 
 
+def compute_dataset_fingerprint(dataset):
+    meta = {}
+
+    if hasattr(dataset, "_fingerprint"):
+        return dataset._fingerprint
+
+    # Fallback
+    meta["length"] = len(dataset)
+
+    if hasattr(dataset, "data_dir"):
+        meta["data_dir"] = str(dataset.data_dir)
+
+    meta_json = json.dumps(meta, sort_keys=True)
+    return hashlib.sha256(meta_json.encode()).hexdigest()
+
+def save_norm_stats(
+    dataset,
+    action_mean,
+    action_std,
+    qpos_mean,
+    qpos_std,
+    depth_geom_mean,
+    depth_geom_std,
+):
+
+    # Determine dataset root
+    if hasattr(dataset, "data_dir"):
+        dataset_root = Path(dataset.data_dir)
+    elif hasattr(dataset, "root"):
+        dataset_root = Path(dataset.root)
+    else:
+        raise RuntimeError("Cannot determine dataset root directory")
+
+    dataset_root.mkdir(parents=True, exist_ok=True)
+
+    fingerprint = compute_dataset_fingerprint(dataset)
+
+    # ---- Save tensors ----
+    torch.save(
+        {
+            "action_mean": action_mean.cpu(),
+            "action_std": action_std.cpu(),
+            "qpos_mean": qpos_mean.cpu(),
+            "qpos_std": qpos_std.cpu(),
+            "depth_geom_mean": depth_geom_mean.cpu() if depth_geom_mean is not None else None,
+            "depth_geom_std": depth_geom_std.cpu() if depth_geom_std is not None else None,
+        },
+        dataset_root / "normalization_stats.pt",
+    )
+
+    # ---- Save metadata ----
+    metadata = {
+        "fingerprint": fingerprint,
+        "num_samples": len(dataset),
+        "timestamp": datetime.now().isoformat(),
+        "action_dim": int(action_mean.shape[0]),
+        "qpos_dim": int(qpos_mean.shape[0]),
+    }
+
+    with open(dataset_root / "normalization_metadata.json", "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    print(f"[Auto-Norm] Saved normalization stats to {dataset_root}")
+
+
 def _to_item(v):
     if torch.is_tensor(v):
         return v.item()
@@ -69,7 +138,7 @@ def _compute_and_set_norm_stats(model, train_dataset, config) -> Tuple[int, int]
     stats_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=32,
-        shuffle=False,
+        shuffle=True,
         num_workers=config.dataloader.num_workers,
     )
 
@@ -161,7 +230,7 @@ def main(config):
     valid_dataset = instantiate(
         config=config.benchmark.dataset_instantiate_config,
         chunk_size=config.agent.instantiate_config.chunk_size,
-        split="val",
+        split="test",
     )
 
     if len(train_dataset) == 0:
