@@ -25,13 +25,14 @@ instantiate_config:
   representation_encoder:
     _target_: autonomous_surgery.models.representation.representation_encoder.RepresentationEncoderNoDepth
     
-    device: cuda
+    device: ${device}
 
     image_encoder:
       _target_: autonomous_surgery.models.representation.representation_encoder.DinoV3Encoder
       model_name: dinov3_vith16plus
       resize_size: ${agent.instantiate_config.representation_encoder.resize_size}
       num_register_tokens: 4
+      device: ${device}
 
     depth_encoder:
       _target_: autonomous_surgery.models.representation.representation_encoder.DepthEncoder

@@ -41,7 +41,8 @@ class DinoV3Encoder(nn.Module):
             self, 
             model_name: str, 
             resize_size: int, 
-            num_register_tokens: int, 
+            num_register_tokens: int,
+            device: str,
             **kwargs):
         super().__init__()
         valid_model_names = {
@@ -54,13 +55,14 @@ class DinoV3Encoder(nn.Module):
 
         self.resize_size = resize_size
         self.num_register_tokens = num_register_tokens
+        self.device = device
 
         pretrained_model_name = valid_model_names[model_name]
         self.processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
         self.feature_extractor = AutoModel.from_pretrained(
-            pretrained_model_name, 
-            device_map="auto",
+            pretrained_model_name,
         )
+        self.feature_extractor.to(self.device)
 
         # freeze the model weights. we do not want to train this
         for param in self.feature_extractor.parameters():
