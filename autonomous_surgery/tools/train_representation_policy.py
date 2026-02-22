@@ -4,25 +4,28 @@
 """
 autonomous_surgery/tools/train_representation_policy_new.py
 
-Representation ACT training script that follows the same training process as
-autonomous_surgery/tools/act_policy_normal.py, while preserving representation-specific
-normalization stats (including depth geometry stats).
+Representation ACT training script with torchrun / DistributedDataParallel (DDP) support.
+
+Launch with:
+    torchrun --nproc_per_node=<NUM_GPUS> train_representation_policy_new.py [hydra overrides]
+
+Single-GPU / CPU (unchanged behaviour):
+    python train_representation_policy_new.py [hydra overrides]
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-import hashlib
 import json
 import functools
-import json
 import os
 import pathlib
-from pathlib import Path
 from typing import Optional, Tuple, Any, Dict
 
 import hydra
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from hydra.utils import call, instantiate
 from omegaconf import OmegaConf
 from termcolor import colored
@@ -31,96 +34,46 @@ from tqdm import tqdm
 from autonomous_surgery.helpers.common import Logger, WandBLogger, set_seed
 from autonomous_surgery.helpers.pytorch import AverageMeter
 
-# def _unpack_batch(
-#     batch,
-# ) -> Tuple[
-#     torch.Tensor,
-#     torch.Tensor,
-#     torch.Tensor,
-#     torch.Tensor,
-#     Any,
-#     torch.Tensor,
-#     Optional[torch.Tensor],
-#     Any,
-# ]:
-#     """Handle both 7-field and 8-field batch layouts."""
-#     if not isinstance(batch, (tuple, list)):
-#         raise ValueError(f"Batch must be tuple/list, got {type(batch)}")
 
-#     (endoscope_image,
-#     wrist_l,
-#     wrist_r,
-#     state,
-#     action_chunk,
-#     is_pad,
-#     instruction_text) = batch
+# ---------------------------------------------------------------------------
+# DDP helpers
+# ---------------------------------------------------------------------------
 
-#     return images, point_clouds, depth, robot_states, raw_states, actions, is_pad, texts
+def setup_ddp() -> Tuple[int, int, int]:
+    """
+    Initialise the default process group when launched via torchrun.
+    Falls back gracefully to single-process mode when the env vars are absent.
+
+    Returns
+    -------
+    rank        : global rank of this process (0 … world_size-1)
+    local_rank  : local rank on this node  (used to select the GPU)
+    world_size  : total number of processes
+    """
+    if "RANK" not in os.environ:
+        # Not launched via torchrun – run as a regular single process.
+        return 0, 0, 1
+
+    dist.init_process_group(backend="nccl")
+    rank = dist.get_rank()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    world_size = dist.get_world_size()
+    torch.cuda.set_device(local_rank)
+    return rank, local_rank, world_size
 
 
-def compute_dataset_fingerprint(dataset):
-    meta = {}
+def cleanup_ddp():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
-    if hasattr(dataset, "_fingerprint"):
-        return dataset._fingerprint
 
-    # Fallback
-    meta["length"] = len(dataset)
+def is_main_process(rank: int) -> bool:
+    return rank == 0
 
-    if hasattr(dataset, "data_dir"):
-        meta["data_dir"] = str(dataset.data_dir)
 
-    meta_json = json.dumps(meta, sort_keys=True)
-    return hashlib.sha256(meta_json.encode()).hexdigest()
-
-def save_norm_stats(
-    dataset,
-    action_mean,
-    action_std,
-    qpos_mean,
-    qpos_std,
-    depth_geom_mean,
-    depth_geom_std,
-):
-
-    # Determine dataset root
-    if hasattr(dataset, "data_dir"):
-        dataset_root = Path(dataset.data_dir)
-    elif hasattr(dataset, "root"):
-        dataset_root = Path(dataset.root)
-    else:
-        raise RuntimeError("Cannot determine dataset root directory")
-
-    dataset_root.mkdir(parents=True, exist_ok=True)
-
-    fingerprint = compute_dataset_fingerprint(dataset)
-
-    # ---- Save tensors ----
-    torch.save(
-        {
-            "action_mean": action_mean.cpu(),
-            "action_std": action_std.cpu(),
-            "qpos_mean": qpos_mean.cpu(),
-            "qpos_std": qpos_std.cpu(),
-            "depth_geom_mean": depth_geom_mean.cpu() if depth_geom_mean is not None else None,
-            "depth_geom_std": depth_geom_std.cpu() if depth_geom_std is not None else None,
-        },
-        dataset_root / "normalization_stats.pt",
-    )
-
-    # ---- Save metadata ----
-    metadata = {
-        "fingerprint": fingerprint,
-        "num_samples": len(dataset),
-        "timestamp": datetime.now().isoformat(),
-        "action_dim": int(action_mean.shape[0]),
-        "qpos_dim": int(qpos_mean.shape[0]),
-    }
-
-    with open(dataset_root / "normalization_metadata.json", "w") as f:
-        json.dump(metadata, f, indent=4)
-
-    print(f"[Auto-Norm] Saved normalization stats to {dataset_root}")
+# ---------------------------------------------------------------------------
+# Dataset fingerprint / normalisation persistence
+# ---------------------------------------------------------------------------
 
 
 def _to_item(v):
@@ -129,99 +82,172 @@ def _to_item(v):
     return v
 
 
-def _compute_and_set_norm_stats(model, train_dataset, config) -> Tuple[int, int]:
-    Logger.print_seperator()
-    Logger.log_info(colored(" [Auto-Norm] Calculating dataset statistics...", "cyan"))
+# ---------------------------------------------------------------------------
+# Normalisation-stat computation (rank-0 computes, then broadcasts to all)
+# ---------------------------------------------------------------------------
 
-    no_depth = not config.use_depth
+def _compute_and_set_norm_stats(
+    model, train_dataset, config, rank: int, world_size: int
+) -> Tuple[int, int]:
+    """
+    Rank-0 computes statistics over the training set and broadcasts them to
+    every other rank so that all processes use identical normalisation values.
+    """
+    device = torch.device(config.device if world_size == 1 else f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}")
 
-    stats_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=32,
-        shuffle=True,
-        num_workers=config.dataloader.num_workers,
-    )
+    # Unwrap DDP to access model attributes / methods directly.
+    raw_model = model.module if isinstance(model, DDP) else model
 
-    all_actions = []
-    all_qpos = []
-    all_geom_feats = [] if not no_depth else None
+    # ------------------------------------------------------------------
+    # 1.  Rank-0 computes stats
+    # ------------------------------------------------------------------
+    if is_main_process(rank):
+        Logger.print_seperator()
+        Logger.log_info(colored(" [Auto-Norm] Calculating dataset statistics...", "cyan"))
 
-    max_samples_for_stats = 10000
-    collected_samples = 0
-
-    model.eval()
-    with torch.no_grad():
-        for batch in tqdm(stats_loader, desc="Computing Stats"):
-            (
-                endoscope_images,
-                wrist_l,
-                wrist_r,
-                robot_states,
-                actions,
-                is_pad,
-                instruction_text,
-            ) = batch
-
-            all_actions.append(actions)
-            all_qpos.append(robot_states)
-
-            if not no_depth:
-                # Make sure `depth` is properly defined in your batch
-                geom = model.representation_encoder.depth_encoder(depth)  # [B, N, Dg]
-                all_geom_feats.append(geom)
-
-            collected_samples += actions.shape[0]
-            if collected_samples >= max_samples_for_stats:
-                break
-
-    # --- Action stats ---
-    all_actions = torch.cat(all_actions, dim=0)
-    flat_actions = all_actions.reshape(-1, all_actions.shape[-1])
-    action_mean = flat_actions.mean(dim=0)
-    action_std = torch.clip(flat_actions.std(dim=0), min=1e-5)
-
-    # --- Qpos stats ---
-    all_qpos = torch.cat(all_qpos, dim=0)
-    flat_qpos = all_qpos.reshape(-1, all_qpos.shape[-1])
-    qpos_mean = flat_qpos.mean(dim=0)
-    qpos_std = torch.clip(flat_qpos.std(dim=0), min=1e-5)
-
-    # --- Depth stats (optional) ---
-    if not no_depth:
-        flat_depth_geom = torch.cat(all_geom_feats, dim=0).reshape(
-            -1, model.representation_encoder._get_depth_emb_dim()
+        stats_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=32,
+            shuffle=True,
+            num_workers=config.dataloader.num_workers,
         )
-        depth_geom_mean = flat_depth_geom.mean(dim=0)
-        depth_geom_std = torch.clip(flat_depth_geom.std(dim=0), min=1e-5)
+
+        all_actions, all_qpos = [], []
+        collected_samples = 0
+        max_samples = 10_000
+
+        raw_model.eval()
+        with torch.no_grad():
+            for batch in tqdm(stats_loader, desc="Computing Stats"):
+                (
+                    endoscope_images,
+                    wrist_l,
+                    wrist_r,
+                    robot_states,
+                    actions,
+                    is_pad,
+                    instruction_text,
+                ) = batch
+
+                all_actions.append(actions)
+                all_qpos.append(robot_states)
+
+                collected_samples += actions.shape[0]
+                if collected_samples >= max_samples:
+                    break
+
+        all_actions = torch.cat(all_actions, dim=0)
+        flat_actions = all_actions.reshape(-1, all_actions.shape[-1])
+        action_mean = flat_actions.mean(dim=0)
+        action_std = torch.clamp(flat_actions.std(dim=0), min=1e-5)
+
+        all_qpos = torch.cat(all_qpos, dim=0)
+        flat_qpos = all_qpos.reshape(-1, all_qpos.shape[-1])
+        qpos_mean = flat_qpos.mean(dim=0)
+        qpos_std = torch.clamp(flat_qpos.std(dim=0), min=1e-5)
+
+        Logger.log_info(f" [Auto-Norm] Action Mean: {action_mean[:3].tolist()}...")
+        Logger.log_info(f" [Auto-Norm] Action Std:  {action_std[:3].tolist()}...")
+        Logger.print_seperator()
     else:
-        depth_geom_mean = None
-        depth_geom_std = None
+        # Non-root ranks create empty placeholders; shapes are filled after broadcast.
+        action_mean = torch.zeros(1)
+        action_std = torch.zeros(1)
+        qpos_mean = torch.zeros(1)
+        qpos_std = torch.zeros(1)
 
-    Logger.log_info(f" [Auto-Norm] Action Mean: {action_mean[:3].tolist()}...")
-    Logger.log_info(f" [Auto-Norm] Action Std:  {action_std[:3].tolist()}...")
+    # ------------------------------------------------------------------
+    # 2.  Broadcast from rank-0 to all other ranks
+    # ------------------------------------------------------------------
+    if world_size > 1:
+        # Broadcast tensor shapes first so non-root ranks can allocate.
+        shapes = torch.zeros(2, dtype=torch.long, device=device)
+        if is_main_process(rank):
+            shapes[0] = action_mean.shape[0]
+            shapes[1] = qpos_mean.shape[0]
 
-    if hasattr(model, "set_norm_stats"):
-        model.set_norm_stats(
-            action_mean.to(config.device),
-            action_std.to(config.device),
-            depth_geom_mean.to(config.device) if depth_geom_mean is not None else None,
-            depth_geom_std.to(config.device) if depth_geom_std is not None else None,
-            qpos_mean.to(config.device),
-            qpos_std.to(config.device),
+        dist.broadcast(shapes, src=0)
+
+        a_dim, q_dim = shapes.tolist()
+
+        for tensor, dim, name in [
+            (action_mean,     a_dim,  "action_mean"),
+            (action_std,      a_dim,  "action_std"),
+            (qpos_mean,       q_dim,  "qpos_mean"),
+            (qpos_std,        q_dim,  "qpos_std"),
+        ]:
+            if not is_main_process(rank):
+                tensor = torch.zeros(dim, device=device)
+            else:
+                tensor = tensor.to(device)
+
+            dist.broadcast(tensor, src=0)
+
+            # Re-bind in local scope so set_norm_stats receives correct tensors.
+            if name == "action_mean":      action_mean      = tensor
+            elif name == "action_std":     action_std       = tensor
+            elif name == "qpos_mean":      qpos_mean        = tensor
+            elif name == "qpos_std":       qpos_std         = tensor
+    else:
+        action_mean      = action_mean.to(device)
+        action_std       = action_std.to(device)
+        qpos_mean        = qpos_mean.to(device)
+        qpos_std         = qpos_std.to(device)
+
+    # ------------------------------------------------------------------
+    # 3.  Inject into the model on every rank
+    # ------------------------------------------------------------------
+    if hasattr(raw_model, "set_norm_stats"):
+        raw_model.set_norm_stats(
+            action_mean, action_std,
+            qpos_mean, qpos_std,
         )
-        Logger.log_info(colored(" [Auto-Norm] Statistics injected into model successfully!", "green"))
+        if is_main_process(rank):
+            Logger.log_info(
+                colored(" [Auto-Norm] Statistics injected into model successfully!", "green")
+            )
     else:
-        Logger.log_warning(colored(" [Warning] Model missing 'set_norm_stats'. Auto-Norm skipped.", "yellow"))
+        if is_main_process(rank):
+            Logger.log_warning(
+                colored(" [Warning] Model missing 'set_norm_stats'. Auto-Norm skipped.", "yellow")
+            )
 
-    Logger.print_seperator()
     return int(qpos_mean.shape[0]), int(action_mean.shape[0])
 
+
+# ---------------------------------------------------------------------------
+# Loss reduction across ranks
+# ---------------------------------------------------------------------------
+
+def reduce_loss(loss: torch.Tensor, world_size: int) -> torch.Tensor:
+    """Average loss tensor across all DDP processes."""
+    if world_size > 1:
+        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+        loss = loss / world_size
+    return loss
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 @hydra.main(version_base=None, config_path="../config", config_name="train_representation_policy")
 def main(config):
 
-    set_seed(config.seed)
+    rank, local_rank, world_size = setup_ddp()
 
+    # Each rank logs to its own seed offset so RNG states diverge intentionally.
+    set_seed(config.seed + rank)
+
+    # Determine per-rank device.
+    if world_size > 1:
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device(config.device)
+
+    # ------------------------------------------------------------------
+    # Datasets
+    # ------------------------------------------------------------------
     train_dataset = instantiate(
         config=config.benchmark.dataset_instantiate_config,
         chunk_size=config.agent.instantiate_config.chunk_size,
@@ -236,6 +262,20 @@ def main(config):
     if len(train_dataset) == 0:
         raise RuntimeError("Train dataset is empty.")
 
+    # ------------------------------------------------------------------
+    # Samplers  (DistributedSampler shards data across ranks)
+    # ------------------------------------------------------------------
+    train_sampler = (
+        DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=config.dataloader.shuffle)
+        if world_size > 1
+        else None
+    )
+    valid_sampler = (
+        DistributedSampler(valid_dataset, num_replicas=world_size, rank=rank, shuffle=False)
+        if world_size > 1
+        else None
+    )
+
     DataLoaderConstructor = functools.partial(
         torch.utils.data.DataLoader,
         batch_size=config.dataloader.batch_size,
@@ -244,7 +284,9 @@ def main(config):
         drop_last=config.dataloader.drop_last,
     )
 
-    # Instantiate once so we can compute depth-geom stats from its depth encoder.
+    # ------------------------------------------------------------------
+    # Model
+    # ------------------------------------------------------------------
     sample_batch = next(iter(DataLoaderConstructor(train_dataset, shuffle=False)))
     _, _, _, sample_robot_state, sample_action, _, _ = sample_batch
 
@@ -252,15 +294,40 @@ def main(config):
         config=config.agent.instantiate_config,
         robot_state_dim=sample_robot_state.size(-1),
         action_dim=sample_action.size(-1),
-    ).to(config.device)
+    ).to(device)
 
-    robot_state_dim, action_dim = _compute_and_set_norm_stats(model, train_dataset, config)
-    Logger.log_info(f'Robot state dim: {colored(robot_state_dim, "red")}')
-    Logger.log_info(f'Action dim: {colored(action_dim, "red")}')
+    robot_state_dim, action_dim = _compute_and_set_norm_stats(
+        model, train_dataset, config, rank, world_size
+    )
 
-    train_loader = DataLoaderConstructor(train_dataset, shuffle=config.dataloader.shuffle)
-    valid_loader = DataLoaderConstructor(valid_dataset, shuffle=False)
+    if is_main_process(rank):
+        Logger.log_info(f'Robot state dim: {colored(robot_state_dim, "red")}')
+        Logger.log_info(f'Action dim: {colored(action_dim, "red")}')
 
+    # Wrap with DDP *after* norm stats are set (they live in raw model buffers).
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+
+    # Convenience accessor for model internals regardless of DDP wrapping.
+    raw_model = model.module if isinstance(model, DDP) else model
+
+    # ------------------------------------------------------------------
+    # DataLoaders  (shuffle=False when using DistributedSampler)
+    # ------------------------------------------------------------------
+    train_loader = DataLoaderConstructor(
+        train_dataset,
+        sampler=train_sampler,
+        shuffle=(train_sampler is None and config.dataloader.shuffle),
+    )
+    valid_loader = DataLoaderConstructor(
+        valid_dataset,
+        sampler=valid_sampler,
+        shuffle=False,
+    )
+
+    # ------------------------------------------------------------------
+    # Optimizer & scheduler
+    # ------------------------------------------------------------------
     optimizer: torch.optim.Optimizer = torch.optim.Adam(
         params=model.parameters(),
         lr=config.train.learning_rate,
@@ -282,10 +349,15 @@ def main(config):
     if kl_weight is None:
         kl_weight = OmegaConf.select(config, "agent.instantiate_config.kl_weight", default=10.0)
     kl_weight = float(kl_weight)
-    Logger.log_info(f"KL weight: {colored(kl_weight, 'red')}")
 
-    evaluator: Optional[Evaluator] = None
-    if getattr(config.benchmark, "evaluator_instantiate_config", None) is not None:
+    if is_main_process(rank):
+        Logger.log_info(f"KL weight: {colored(kl_weight, 'red')}")
+
+    # ------------------------------------------------------------------
+    # Optional evaluator (rank-0 only)
+    # ------------------------------------------------------------------
+    evaluator = None
+    if is_main_process(rank) and getattr(config.benchmark, "evaluator_instantiate_config", None) is not None:
         try:
             evaluator = instantiate(
                 config=config.benchmark.evaluator_instantiate_config,
@@ -298,16 +370,23 @@ def main(config):
     best_val_loss = float("inf")
     clip_grad_value = OmegaConf.select(config, "train.clip_grad_value", default=10.0)
 
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
     for cur_epoch in range(config.train.num_epochs):
-        epoch_logging_info: Dict[str, Any] = {"epoch_step": cur_epoch + 1}
+
+        # Inform the sampler of the current epoch so shuffling is correct.
+        if train_sampler is not None:
+            train_sampler.set_epoch(cur_epoch)
 
         model.train()
         loss_train = AverageMeter()
 
         train_pbar = tqdm(
             train_loader,
-            desc=f"Training for Epoch {cur_epoch+1}",
-            leave=False
+            desc=f"Training Epoch {cur_epoch+1}",
+            leave=False,
+            disable=not is_main_process(rank),   # only rank-0 shows the bar
         )
 
         for cur_iter, batch in enumerate(train_pbar):
@@ -315,14 +394,15 @@ def main(config):
 
             endoscope_image, wrist_l, wrist_r, state, action_chunk, action_is_pad, instruction_text = batch
 
-            endoscope_image = endoscope_image.to(config.device)
-            wrist_l = wrist_l.to(config.device)
-            wrist_r = wrist_r.to(config.device)
-            state = state.to(config.device)
-            action_chunk = action_chunk.to(config.device)
-            action_is_pad = action_is_pad.to(config.device)
+            endoscope_image  = endoscope_image.to(device, non_blocking=True)
+            wrist_l          = wrist_l.to(device, non_blocking=True)
+            wrist_r          = wrist_r.to(device, non_blocking=True)
+            state            = state.to(device, non_blocking=True)
+            action_chunk     = action_chunk.to(device, non_blocking=True)
+            action_is_pad    = action_is_pad.to(device, non_blocking=True)
 
-            actions_norm = (action_chunk - model.action_mean) / model.action_std
+            actions_norm = (action_chunk - raw_model.action_mean) / raw_model.action_std
+
             preds = model(
                 endoscope_image,
                 wrist_l,
@@ -334,20 +414,25 @@ def main(config):
             )
 
             loss_result = call(
-                config.benchmark.loss_func, 
-                preds, 
-                actions_norm, 
+                config.benchmark.loss_func,
+                preds,
+                actions_norm,
                 kl_weight=kl_weight,
-                is_pad=action_is_pad
+                is_pad=action_is_pad,
             )
 
             if isinstance(loss_result, tuple):
                 loss, loss_dict = loss_result
-                if isinstance(loss_dict, dict):
+                if isinstance(loss_dict, dict) and is_main_process(rank):
                     for k, v in loss_dict.items():
                         iteration_info[f"train_iteration/{k}"] = _to_item(v)
             else:
                 loss = loss_result
+
+            # Average loss across all ranks before backward so gradients are
+            # consistent (DDP already all-reduces gradients, but this keeps
+            # the logged scalar accurate).
+            loss_scalar = reduce_loss(loss.detach().clone(), world_size).item()
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -356,49 +441,58 @@ def main(config):
                 torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad_value)
 
             optimizer.step()
-            loss_train.update(loss.item())
+            loss_train.update(loss_scalar)
 
-            iteration_info.update(
-                {
-                    "iteration_step": cur_epoch * len(train_loader) + cur_iter + 1,
-                    "train_iteration/epoch": cur_epoch,
-                    "train_iteration/loss": loss.item(),
-                    "train_iteration/learning_rate": scheduler.get_last_lr()[0],
-                }
-            )
+            if is_main_process(rank):
+                iteration_info.update(
+                    {
+                        "iteration_step": cur_epoch * len(train_loader) + cur_iter + 1,
+                        "train_iteration/epoch": cur_epoch,
+                        "train_iteration/loss": loss_scalar,
+                        "train_iteration/learning_rate": scheduler.get_last_lr()[0],
+                    }
+                )
 
         scheduler.step()
-        epoch_logging_info["train_epoch/epoch_loss"] = loss_train.avg
-        Logger.log_info(f"[train] epoch={cur_epoch}, loss={loss_train.avg:.6f}")
 
+        if is_main_process(rank):
+            Logger.log_info(f"[train] epoch={cur_epoch}, loss={loss_train.avg:.6f}")
+
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
         periodic_validation = (cur_epoch + 1 > config.evaluation.num_skip_epochs) and (
             (cur_epoch + 1) % config.evaluation.validation_frequency_epochs == 0
         )
         last_epoch = (cur_epoch + 1) == config.train.num_epochs
 
         if periodic_validation or last_epoch:
+            if valid_sampler is not None:
+                valid_sampler.set_epoch(cur_epoch)
+
             model.eval()
             loss_val = AverageMeter()
 
             valid_pbar = tqdm(
                 valid_loader,
-                desc=f"Validation for Epoch {cur_epoch+1}",
-                leave=False
+                desc=f"Validation Epoch {cur_epoch+1}",
+                leave=False,
+                disable=not is_main_process(rank),
             )
 
             with torch.no_grad():
                 for batch in valid_pbar:
                     endoscope_image, wrist_l, wrist_r, state, action_chunk, action_is_pad, instruction_text = batch
 
+                    endoscope_image  = endoscope_image.to(device, non_blocking=True)
+                    wrist_l          = wrist_l.to(device, non_blocking=True)
+                    wrist_r          = wrist_r.to(device, non_blocking=True)
+                    state            = state.to(device, non_blocking=True)
+                    action_chunk     = action_chunk.to(device, non_blocking=True)
+                    action_is_pad    = action_is_pad.to(device, non_blocking=True)
 
-                    endoscope_image = endoscope_image.to(config.device)
-                    wrist_l = wrist_l.to(config.device)
-                    wrist_r = wrist_r.to(config.device)
-                    state = state.to(config.device)
-                    action_chunk = action_chunk.to(config.device)
-                    action_is_pad = action_is_pad.to(config.device)
+                    actions_norm = (action_chunk - raw_model.action_mean) / raw_model.action_std
 
-                    actions_norm = (action_chunk - model.action_mean) / model.action_std
                     preds = model(
                         endoscope_image,
                         wrist_l,
@@ -410,60 +504,66 @@ def main(config):
                     )
 
                     loss_result = call(
-                        config.benchmark.loss_func, 
-                        preds, 
-                        actions_norm, 
+                        config.benchmark.loss_func,
+                        preds,
+                        actions_norm,
                         kl_weight=kl_weight,
-                        is_pad=action_is_pad
+                        is_pad=action_is_pad,
                     )
 
-                    val_loss_val = loss_result[0] if isinstance(loss_result, tuple) else loss_result
-                    loss_val.update(val_loss_val.item(), action_chunk.shape[0])
+                    val_loss = loss_result[0] if isinstance(loss_result, tuple) else loss_result
+                    val_loss_scalar = reduce_loss(val_loss.detach().clone(), world_size).item()
+                    loss_val.update(val_loss_scalar, action_chunk.shape[0])
 
-            epoch_logging_info.update(
-                {
-                    "validation/epoch": cur_epoch,
-                    "validation/loss": loss_val.avg,
-                }
-            )
-            Logger.log_info(f"[validation] epoch={cur_epoch}, val_loss={loss_val.avg:.6f}")
+            if is_main_process(rank):
+                Logger.log_info(f"[validation] epoch={cur_epoch}, val_loss={loss_val.avg:.6f}")
 
-            avg_success = 0.0
-            avg_rewards = 0.0
+                avg_success = 0.0
+                saved = False
 
-            saved = False
-            if (
-                evaluator is not None
-                and config.evaluation.save_best_model
-                and avg_success > best_success
-            ):
-                best_success = avg_success
-                saved = True
-
-            if config.evaluation.save_best_model and loss_val.avg < best_val_loss:
-                best_val_loss = loss_val.avg
-                if evaluator is None:
+                if (
+                    evaluator is not None
+                    and config.evaluation.save_best_model
+                    and avg_success > best_success
+                ):
+                    best_success = avg_success
                     saved = True
 
-            if saved:
-                model_path = os.path.join(local_run_output_dir, "best_model.pth")
-                torch.save(model.state_dict(), model_path)
-                Logger.log_info(f"Save best model to {colored(model_path, 'red')}")
+                if config.evaluation.save_best_model and loss_val.avg < best_val_loss:
+                    best_val_loss = loss_val.avg
+                    if evaluator is None:
+                        saved = True
 
-                with open(os.path.join(local_run_output_dir, "best_model.json"), "w") as f:
-                    json.dump(
-                        {
-                            "epoch": cur_epoch,
-                            "val_loss": loss_val.avg,
-                            "avg_success": avg_success,
-                        },
-                        f,
-                        indent=4,
-                    )
+                if saved:
+                    model_path = os.path.join(local_run_output_dir, "best_model.pth")
+                    # Save raw model weights (not the DDP wrapper).
+                    torch.save(raw_model.state_dict(), model_path)
+                    Logger.log_info(f"Save best model to {colored(model_path, 'red')}")
 
-            torch.save(model.state_dict(), os.path.join(local_run_output_dir, "last_model.pth"))
+                    with open(os.path.join(local_run_output_dir, "best_model.json"), "w") as f:
+                        json.dump(
+                            {
+                                "epoch": cur_epoch,
+                                "val_loss": loss_val.avg,
+                                "avg_success": avg_success,
+                            },
+                            f,
+                            indent=4,
+                        )
 
-    Logger.log_ok("Training Finished!")
+                torch.save(
+                    raw_model.state_dict(),
+                    os.path.join(local_run_output_dir, "last_model.pth"),
+                )
+
+        # Barrier keeps ranks in sync at the end of every epoch.
+        if world_size > 1:
+            dist.barrier()
+
+    if is_main_process(rank):
+        Logger.log_ok("Training Finished!")
+
+    cleanup_ddp()
 
 
 if __name__ == "__main__":

@@ -55,7 +55,6 @@ class RepresentationACTActor(nn.Module):
             # behavior
             return_dict: bool = True,
             sample_prior: bool = False,   # inference: sample from prior or use mean
-            use_depth: bool = True,
             **kwargs,
     ):
         super().__init__()
@@ -71,7 +70,6 @@ class RepresentationACTActor(nn.Module):
         self.latent_dim = int(latent_dim)
         self.return_dict = bool(return_dict)
         self.sample_prior = bool(sample_prior)
-        self.use_depth = use_depth
 
         # robot state -> d_model
         self.robot_to_d = nn.Linear(self.robot_state_dim, self.model_emb_dim)
@@ -132,30 +130,26 @@ class RepresentationACTActor(nn.Module):
         # These will be saved in the .pth file but not trained via gradient descent.
         self.register_buffer('action_mean', torch.zeros(self.action_dim))
         self.register_buffer('action_std', torch.ones(self.action_dim))
-        self.register_buffer('depth_geom_mean', torch.zeros(self.representation_encoder._get_depth_emb_dim()))
-        self.register_buffer('depth_geom_std', torch.zeros(self.representation_encoder._get_depth_emb_dim()))
         self.register_buffer('qpos_mean', torch.zeros(self.robot_state_dim))
         self.register_buffer('qpos_std', torch.ones(self.robot_state_dim))
         self.register_buffer('is_norm_initialized', torch.tensor(0, dtype=torch.bool))
 
-    # normalization methods
-    def set_norm_stats(self, action_mean, action_std, depth_geom_mean, depth_geom_std, qpos_mean, qpos_std):
+    # normalization
+    def set_norm_stats(self, action_mean, action_std, qpos_mean, qpos_std):
         """Called by training script to inject dataset statistics."""
-        # Safety clip to avoid div by zero
         action_std = torch.clip(action_std, min=1e-5)
         qpos_std = torch.clip(qpos_std, min=1e-5)
 
-        self.action_mean.data = action_mean
-        self.action_std.data = action_std
-        if self.use_depth:
-            self.depth_geom_mean.data = depth_geom_mean
-            self.depth_geom_std.data = depth_geom_std
-        self.qpos_mean.data = qpos_mean
-        self.qpos_std.data = qpos_std
-        self.is_norm_initialized.data = torch.tensor(1, dtype=torch.bool, device=self.is_norm_initialized.device)
+        # Use copy_ instead of .data = ... to guarantee the buffer stays
+        # on the correct device and retains its registration with DDP.
+        self.action_mean.copy_(action_mean)
+        self.action_std.copy_(action_std)
+        self.qpos_mean.copy_(qpos_mean)
+        self.qpos_std.copy_(qpos_std)
 
-        if self.use_depth:
-            self.representation_encoder._add_depth_geom_stats(depth_geom_mean, depth_geom_std)
+        # copy_ keeps the tensor on its original device — no need to pass device explicitly
+        self.is_norm_initialized.fill_(True)
+
         print("ACTPolicy: Normalization stats updated and locked into model buffers.")
 
     def normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:

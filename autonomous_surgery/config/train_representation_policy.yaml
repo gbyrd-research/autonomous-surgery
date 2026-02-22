@@ -6,7 +6,6 @@ use_depth: False
 
 # Experiment settings
 seed: 0
-device: cuda:0
 
 dataloader:
   batch_size: 16

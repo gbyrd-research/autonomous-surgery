@@ -24,8 +24,6 @@ instantiate_config:
   # Encoders
   representation_encoder:
     _target_: autonomous_surgery.models.representation.representation_encoder.RepresentationEncoder
-    
-    device: cuda
 
     image_encoder:
       _target_: autonomous_surgery.models.representation.representation_encoder.DinoV3Encoder
