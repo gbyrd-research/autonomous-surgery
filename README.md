@@ -18,7 +18,7 @@ conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
 pip install -r requirements.txt
 pip install -e .
-conda install -c conda-forge ffmpeg
+conda install -c conda-forge ffmpeg=7
 ```
 
 4. Assuming your lerobot dataset has been downloaded, you can run the following:
