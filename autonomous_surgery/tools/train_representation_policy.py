@@ -243,7 +243,7 @@ def main(config):
     if world_size > 1:
         device = torch.device(f"cuda:{local_rank}")
     else:
-        device = torch.device(config.device)
+        device = torch.device("cuda:0")
 
     # ------------------------------------------------------------------
     # Datasets
@@ -419,6 +419,7 @@ def main(config):
                 actions_norm,
                 kl_weight=kl_weight,
                 is_pad=action_is_pad,
+                include_is_pad_loss=True
             )
 
             if isinstance(loss_result, tuple):
@@ -509,6 +510,7 @@ def main(config):
                         actions_norm,
                         kl_weight=kl_weight,
                         is_pad=action_is_pad,
+                        include_is_pad_loss=True
                     )
 
                     val_loss = loss_result[0] if isinstance(loss_result, tuple) else loss_result

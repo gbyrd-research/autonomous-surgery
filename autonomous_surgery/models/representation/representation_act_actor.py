@@ -94,12 +94,15 @@ class RepresentationACTActor(nn.Module):
         self.posterior_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_encoder_layers)
         self.posterior_proj = nn.Linear(self.model_emb_dim, 2 * self.latent_dim)  # -> mu/logvar
 
+        # Currently, we are using the classical ACT approach, in which we sample
+        # from normal distribution instead of a learned prior. This is simpler
+        # and stabalizes training. Maybe if we change this, we will see improvement..
         # ----- conditional prior p(z|obs): MLP(global_obs) -----
-        self.prior_net = nn.Sequential(
-            nn.Linear(self.model_emb_dim, self.model_emb_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.model_emb_dim, 2 * self.latent_dim),
-        )
+        # self.prior_net = nn.Sequential(
+        #     nn.Linear(self.model_emb_dim, self.model_emb_dim),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(self.model_emb_dim, 2 * self.latent_dim),
+        # )
 
         # latent z -> model space d_model
         self.latent_out = nn.Linear(self.latent_dim, self.model_emb_dim)
@@ -205,10 +208,24 @@ class RepresentationACTActor(nn.Module):
         return mu, logvar
 
     def _prior(self, global_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        stats = self.prior_net(global_d)  # [B,2Z]
-        mu = stats[:, : self.latent_dim]
-        logvar = stats[:, self.latent_dim :]
+
+        """
+        Standard normal prior p(z) = N(0, I)
+        Ignores conditioning.
+        """
+        B = global_d.shape[0]
+        device = global_d.device
+        dtype = global_d.dtype
+
+        mu = torch.zeros(B, self.latent_dim, device=device, dtype=dtype)
+        logvar = torch.zeros(B, self.latent_dim, device=device, dtype=dtype)  # log(1) = 0
+
         return mu, logvar
+
+        # stats = self.prior_net(global_d)  # [B,2Z]
+        # mu = stats[:, : self.latent_dim]
+        # logvar = stats[:, self.latent_dim :]
+        # return mu, logvar
 
     def forward(
         self,
@@ -268,7 +285,7 @@ class RepresentationACTActor(nn.Module):
         actions_hat_norm = self.action_head(hs)          # [B,K,A] (Normalized Space)
         is_pad_hat = self.is_pad_head(hs).squeeze(-1)    # [B,K]
 
-              # 5. Un-normalize Output
+        # 5. Un-normalize Output
         # Return predictions in Real Physical Scale so external Loss/Metric functions work as expected.
         # Note: Ideally loss should be computed in Normalized space, but un-normalizing here ensures
         # compatibility with existing code that expects raw units.
