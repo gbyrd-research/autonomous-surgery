@@ -1,36 +1,4 @@
-1. Build the docker image.
-
-```bash
-docker build -t autonomous_surgery:latest .
-```
-
-2. Add the various environment variables specified in the `docker-compose.yaml` file. Next, run a docker container from the built image and enter it interactively.
-
-```bash
-chmod +x run_container.sh
-./run_container.sh
-```
-
-3. Inside the container, create a conda environment and install dependencies.
-
-```bash
-conda create -n autonomous_surgery python=3.11
-conda activate autonomous_surgery
-pip install -r requirements.txt
-pip install -e .
-conda install -c conda-forge ffmpeg=7
-```
-
-4. Assuming your lerobot dataset has been downloaded, you can run the following:
-
-```bash
-python -m autonomous_surgery.tools.train_representation_policy
-```
-
-
-
-
-<!-- <div align="center">
+<div align="center">
 
 # SURPASS: Autonomous Surgery
 
@@ -45,7 +13,21 @@ This repo contains code for automating surgical tasks at Johns Hopkins Universit
 
 <div align="left">
 
-## Setting Up HPC Cluster Environment
+## Prerequisites
+
+### DinoV3 
+We use DinoV3 in this repository. You will need to request access to this via Huggingface. Do this [here](https://huggingface.co/facebook/dinov3-vitb16-pretrain-lvd1689m). 
+
+## Installation Choices
+
+
+There are a few different ways to install depending on where you will be using the repository. The basic process is to set up a conda environment in which you can install dependencies. Below are the 3 different ways to set up environments depending on where you will use the repo:
+
+1. **Using and HPC Cluster with Singularity** - If your cluster does not allow docker containers or conda environments.
+2. **Using a docker container** - If you have access to Docker (Strongly Recommended).
+3. **Using a basic conda environment** - This is possible, but brittle on many systems (Using Docker is better).
+
+## HPC Cluster with Singularity (DSAI Cluster)
 
 <details>
 <summary>1. Procure an interactive node</summary>
@@ -84,301 +66,98 @@ export SANDBOX="<path/to/surpass.sandbox>"
 
 To enter into the sandbox directory interactively, you can run:
 
-**NOTE - !!!VERY IMPORTANT!!! : Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of storage space.
+**NOTE** - **!!!VERY IMPORTANT!!!**: Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of storage space.
 
 ```bash
 apptainer shell --nv --writable \
     --bind <path/to/workspace_dir>:/home/<user>/<workspace_dir_name> \
+    HF_TOKEN=<your_huggingface_token_here> # for using dinov3
     $SANDBOX
 ```
 
-Enter the sandbox as above and then proceed to install the dependencies below.
-
 </details>
 
-<details>
-<summary>4. Configure ssh agent if not already running</summary>
-
-```bash
-ssh-add -l
-```
-
-If you get: Could not open a connection to your authentication agent then:
-
-```bash
-# Turn on Agent
-eval "$(ssh-agent -s)"
-
-# Add key
-ssh-add ~/.ssh/id_rsa
-
-# If successful, you will see a fingerprint of your key instead of the error message.
-ssh-add -l
-```
-
-</details>
-
-## Setting Up Docker Container
+## Docker Container
 
 <details>
-<summary>1. Configure ssh agent if not already running</summary>
+<summary>1. Build the docker image.</summary>
 
-```bash
-ssh-add -l
-```
-
-If you get: Could not open a connection to your authentication agent then:
-
-```bash
-# Turn on Agent
-eval "$(ssh-agent -s)"
-
-# Add key
-ssh-add ~/.ssh/id_rsa
-
-# If successful, you will see a fingerprint of your key instead of the error message.
-ssh-add -l
-```
-</details>
-
-<details>
-<summary>2. Build Docker image.</summary>
+In the base directory of the repo, run:
 
 ```bash
 docker build -t autonomous_surgery:latest .
 ```
+</details>
+
+<details>
+<summary>2. Set up docker-compose.yaml file</summary>
+
+There are various environment variables that need to be set uniquely for each user in the `docker-compose.yaml` file. Set these.
 
 </details>
 
 <details>
-<summary>3. Run docker container from autonomous_surgery Docker image.</summary>
+<summary>3. Start the Docker container.</summary>
+
+You can run the container in headless mode and then connect via VS Code: `Dev Containers: Attach to Running Container`:
 
 ```bash
-docker compose up
+chmod +x run_container.sh
+./run_container.sh
+```
+
+Alternatively, you can immediately enter the container in an interactive terminal with:
+
+```bash
+chmod +x run_container.sh
+./run_container.sh -i
 ```
 
 </details>
 
-<details>
-<summary>4. Enter the container in interactive mode.</summary>
+## Conda Environment
+
+If you want to just create a conda environment without containerization, continue to the next section on installing dependencies. Do this at your own risk, as a Docker container is generally going to be more robust.
+
+#
+
+<div align="center">
+
+# Dependencies
+
+<div align="left">
+
+You can create a conda environment and install all dependencies with:
 
 ```bash
-docker exec -it autonomous_surgery /bin/bash
-```
-
-</details>
-
-Proceed to `Install Dependencies` below.
-
-
-## Install Dependencies
-
-<details>
-<summary>1. Create a conda environment, immediately install Lerobot, and cd into your workspace directory.</summary>
-
-```bash
-source /opt/conda/etc/profile.d/conda.sh
 conda create -n autonomous_surgery python=3.11
 conda activate autonomous_surgery
-
-# lerobot must be installed before installing the downstream dependencies
-# because installing lerobot after will change the pytorch installation which
-# will break the downstream dependencies
-pip install lerobot==0.3.3
-
-cd </home/<user>/<workspace_dir_name>>
-```
-</details>
-
-<details>
-<summary>2. Clone this repo and install the git submodules.</summary>
-
-**NOTE:** If you are running with a docker container, this step is different. See below.
-
-```bash
-git clone git@github.com:gbyrd-research/autonomous-surgery.git
-cd autonomous-surgery
-git submodule update --init --recursive
-```
-
-**Docker container version**
-
-You **MUST** run the following on the host machine **outside of the docker container** before entering the container. Otherwise, you will run into challenges cloning the submodules due to user name mismatches and dubious ownership errors.
-
-```
-git submodule update --init --recursive
-```
-
-</details>
-
-<details>
-<summary>3. Install dependencies of models</summary>
-
-```bash
-# R3M（A Universal Visual Representation for Robot Manipulation）
-pip install git+https://github.com/facebookresearch/r3m.git --no-deps
-
-# CLIP (Contrastive Language-Image Pre-Training)
-pip install --no-build-isolation git+https://github.com/openai/CLIP.git --no-deps
-
-# VC1（Visual Cortex）
-cd third_party/eai-vc/vc_models
-pip install -e . --no-deps
-cd ../../..
-
-# SPA（3D SPatial-Awareness Enables Effective Embodied Representation）
-cd third_party/SPA 
-pip install --no-build-isolation . --no-deps
-cd ../..
-```
-</details>
-
-<details>
-<summary>4. Install dependencies of simulation environments</summary>
-
-```bash
-# Metaworld
-pip install git+https://github.com/Farama-Foundation/Metaworld.git@master#egg=metaworld
-
-# RLBench
-export COPPELIASIM_ROOT=${HOME}/Programs/CoppeliaSim
-wget --no-check-certificate https://downloads.coppeliarobotics.com/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-mkdir -p $COPPELIASIM_ROOT && tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz -C $COPPELIASIM_ROOT --strip-components 1
-rm -rf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-cd third_party/RLBench
+pip install -r requirements.txt
 pip install -e .
-cd ../..
+conda install -c conda-forge ffmpeg=7
 ```
 
-</details>
 
-<details>
+<div align="center">
 
-<summary>5. Downgrade pip</summary>
+# Dataset
+
+<div align="left">
+
+This repository uses the Lerobot format for training. Ensure your dataset is formatted appropriately in your huggingface dataset directory. To find set this directory, you can use the environment variable `HF_HOME`.
+
+<div align="center">
+
+# Training
+
+<div align="left">
+
+To train a model, you can run:
 
 ```bash
-pip install pip==23.3.1
+python -m autonomous_surgery.tools.train_representation_policy
 ```
 
-</details>
-
-<details>
-
-<summary>6. Install repo as editable python package</summary>
-
-```bash
-pip install -e .
-
-# PointNext
-cd autonomous_surgery/models/point_next
-cd openpoints/cpp/pointnet2_batch
-pip install --no-build-isolation .
-cd ../subsampling
-pip install --no-build-isolation .
-cd ../pointops
-pip install --no-build-isolation .
-cd ../chamfer_dist
-pip install --no-build-isolation .
-cd ../emd
-pip install --no-build-isolation .
-cd ../../../../../..
-```
-
-</details>
-
-<details>
-<summary>7. Quick gymnasium fix</summary>
-
-```bash
-pip install -U gymnasium
-```
-</details>
-
-<details>
-<summary>8. Install pytorch3d</summary>
-
-```bash
-pip install --no-build-isolation \
-    "git+https://github.com/facebookresearch/pytorch3d.git@stable"
-```
-
-</details>
+The configs for training can be found in `autonomous_surgery/config`.
 
 
-
-# Running the code
-
-## Entering the sandbox to run the code
-
-You will need to include various environment variables when entering the singularity sandbox to run this code. Here is my (Grayson) setup. You will need to populate some of the environment variables with your unique entries.
-
-Reminder:
-
-```bash
-export SANDBOX="<path/to/surpass.sandbox>"
-```
-
-**NOTE: Ensure that your workspace directory is within the `/home/<user>/scratchmunbera1` directory. If it is anywhere else, you will run out of space.
-
-```bash
-apptainer shell --nv --writable \
-    --bind <path/to/workspace_dir>:/home/<user>/<workspace_dir_name> \
-    --env COPPELIASIM_ROOT=${HOME}/Programs/CoppeliaSim \
-    --env LD_LIBRARY_PATH=$COPPELIASIM_ROOT:$LD_LIBRARY_PATH \
-    --env QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT \
-    --env DISPLAY=:99 \
-    --env SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    --env REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    --env MUJOCO_GL=egl \
-    --env PYOPENGL_PLATFORM=egl \
-    --env HF_TOKEN=<your_huggingface_token> \
-    --env HF_HOME=</home/<user>/<workspace_dir_name>/.hf> \
-    --env TORCH_HOME=</home/<user>/<workspace_dir_name>/.torch> \
-    $SANDBOX
-```
-
-## Debugging
-<details>
-<summary>
-To use the Visual Studio Code's debugger, the following must be done.</summary>
-
-1. Ensure your VS Code is running **ON THE COMPUTE NODE YOU WISH TO RUN THE CODE ON.**
-2. Inside your singularity container and inside your conda environment, initialize `debugpy` on the file you wish to debug. Use the `--wait-for-client` flag to initialize the debugger and wait for a client to connect. For example:
-
-```bash
-python -m debugpy --listen 0.0.0.0:5678 --wait-for-client -m autonomous_surgery.tools.train_policy_new
-```
-3. Add something similar to the below in your `.vscode/launch.json` file:
-```json
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Attach to Singularity Python",
-            "type": "python",
-            "request": "attach",
-            "connect": {
-                "host": "localhost",
-                "port": 5678
-            },
-            "pathMappings": [
-                {
-                    # path to the workspace folder OUTSIDE your singularity container
-                    "localRoot": "${workspaceFolder}",
-
-                    # path to the workspace folder INSIDE your singularity container
-                    "remoteRoot": "/home/gbyrd/SURPASS"
-                }
-            ]
-        }
-    ]
-}
-```
-4. Click on the debug icon in VS Code and press the play button after selecting `Attach to Singularity Python`
-</details>
-
-## Generate simulation dataset
-
-```bash
-python -m autonomous_surgery.scripts.gen_data_metaworld
-``` -->
