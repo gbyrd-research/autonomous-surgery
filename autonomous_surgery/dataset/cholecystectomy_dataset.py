@@ -164,20 +164,24 @@ class CholecystectomyACTDataset(Dataset):
         episodes = parse_split_range(info["splits"][split])
 
         self.dataset = LeRobotDataset(
-            repo_id="surpass/cholecystectomy",
+            repo_id=repo_id,
             root=root,
-            episodes=episodes,
-            tolerance_s=1e-4,
+            tolerance_s=tolerance_s,
             delta_timestamps={
                 "action": [i / info["fps"] for i in range(chunk_size)],
             },
         )
+
+        self.episode_start_idx = self.dataset.episode_data_index["from"][episodes[0]].item()
+        self.episode_end_idx = self.dataset.episode_data_index["to"][episodes[-1]].item()
         
 
     def __len__(self):
-        return self.dataset.num_frames
+        return self.episode_end_idx-self.episode_start_idx
 
     def __getitem__(self, idx):
+
+        idx = idx + self.episode_start_idx
 
         sample = self.dataset[idx]
 
@@ -202,38 +206,27 @@ class CholecystectomyACTDataset(Dataset):
     
 if __name__=="__main__":
     act_dataset = CholecystectomyACTDataset(
-        repo_id="surpass/cholecystectomy", 
-        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/cholecystectomy",
+        repo_id="surpass/cholecystectomy_dummy", 
+        root="/home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_dummy",
         tolerance_s=1e-4,
-        split="train"
+        split="test"
     )
-    act_dataset_cs_1 = CholecystectomyACTDataset(
-        repo_id="surpass/cholecystectomy", 
-        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/cholecystectomy",
-        tolerance_s=1e-4,
-        split="train",
-        chunk_size=1
-    )
-    dataset = CholecystectomyDataset(
-        repo_id="surpass/cholecystectomy", 
-        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/cholecystectomy",
-        tolerance_s=1e-4,
-        split="train"
-    )
-    
-    N_index = 1000
 
-    start_act = time.time()
-    for i in tqdm(range(N_index)):
-        act_dataset[i]
-    print(f"Time ACT at {N_index} calls: {time.time()-start_act}")
+    act_dataset[0]
 
-    start_act = time.time()
-    for i in tqdm(range(N_index)):
-        act_dataset_cs_1[i]
-    print(f"Time ACT cs 1 at {N_index} calls: {time.time()-start_act}")
+    print("Done")
 
-    start = time.time()
-    for i in tqdm(range(N_index)):
-        dataset[i]
-    print(f"Time normal dataset at {N_index} calls: {time.time()-start}")
+    # start_act = time.time()
+    # for i in tqdm(range(N_index)):
+    #     act_dataset[i]
+    # print(f"Time ACT at {N_index} calls: {time.time()-start_act}")
+
+    # start_act = time.time()
+    # for i in tqdm(range(N_index)):
+    #     act_dataset_cs_1[i]
+    # print(f"Time ACT cs 1 at {N_index} calls: {time.time()-start_act}")
+
+    # start = time.time()
+    # for i in tqdm(range(N_index)):
+    #     dataset[i]
+    # print(f"Time normal dataset at {N_index} calls: {time.time()-start}")
