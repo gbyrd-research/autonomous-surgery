@@ -229,6 +229,12 @@ def reduce_loss(loss: torch.Tensor, world_size: int) -> torch.Tensor:
     return loss
 
 
+def meter_value_or_na(meter: AverageMeter) -> str:
+    if meter.count == 0:
+        return "n/a"
+    return f"{meter.avg:.6f}"
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -404,6 +410,10 @@ def main(config):
 
         model.train()
         loss_train = AverageMeter()
+        recon_train = AverageMeter()
+        kl_train = AverageMeter()
+        weighted_kl_train = AverageMeter()
+        pad_bce_train = AverageMeter()
 
         train_pbar = tqdm(
             train_loader,
@@ -452,6 +462,7 @@ def main(config):
                         iteration_info[f"train_iteration/{k}"] = _to_item(v)
             else:
                 loss = loss_result
+                loss_dict = {}
 
             # Average loss across all ranks before backward so gradients are
             # consistent (DDP already all-reduces gradients, but this keeps
@@ -467,6 +478,22 @@ def main(config):
             optimizer.step()
             loss_train.update(loss_scalar)
 
+            recon_value = loss_dict.get("recon", None)
+            if recon_value is not None:
+                recon_scalar = reduce_loss(recon_value.detach().clone(), world_size).item()
+                recon_train.update(recon_scalar)
+
+            kl_value = loss_dict.get("kl", None)
+            if kl_value is not None:
+                kl_scalar = reduce_loss(kl_value.detach().clone(), world_size).item()
+                kl_train.update(kl_scalar)
+                weighted_kl_train.update(kl_weight * kl_scalar)
+
+            pad_value = loss_dict.get("pad_bce", None)
+            if pad_value is not None:
+                pad_scalar = reduce_loss(pad_value.detach().clone(), world_size).item()
+                pad_bce_train.update(pad_scalar)
+
             if is_main_process(rank):
                 iteration_info.update(
                     {
@@ -481,6 +508,13 @@ def main(config):
 
         if is_main_process(rank):
             Logger.log_info(f"[train] epoch={cur_epoch}, loss={loss_train.avg:.6f}")
+            train_breakdown = (
+                f"[train] epoch={cur_epoch}, recon={meter_value_or_na(recon_train)}, "
+                f"kl={meter_value_or_na(kl_train)}, "
+                f"weighted_kl={meter_value_or_na(weighted_kl_train)}, "
+                f"pad_bce={meter_value_or_na(pad_bce_train)}"
+            )
+            Logger.log_info(train_breakdown)
 
         # ------------------------------------------------------------------
         # Validation
@@ -496,6 +530,10 @@ def main(config):
 
             model.eval()
             loss_val = AverageMeter()
+            recon_val = AverageMeter()
+            kl_val = AverageMeter()
+            weighted_kl_val = AverageMeter()
+            pad_bce_val = AverageMeter()
 
             valid_pbar = tqdm(
                 valid_loader,
@@ -536,12 +574,39 @@ def main(config):
                         include_is_pad_loss=True
                     )
 
-                    val_loss = loss_result[0] if isinstance(loss_result, tuple) else loss_result
+                    if isinstance(loss_result, tuple):
+                        val_loss, val_loss_dict = loss_result
+                    else:
+                        val_loss = loss_result
+                        val_loss_dict = {}
                     val_loss_scalar = reduce_loss(val_loss.detach().clone(), world_size).item()
                     loss_val.update(val_loss_scalar, action_chunk.shape[0])
 
+                    val_recon = val_loss_dict.get("recon", None)
+                    if val_recon is not None:
+                        val_recon_scalar = reduce_loss(val_recon.detach().clone(), world_size).item()
+                        recon_val.update(val_recon_scalar, action_chunk.shape[0])
+
+                    val_kl = val_loss_dict.get("kl", None)
+                    if val_kl is not None:
+                        val_kl_scalar = reduce_loss(val_kl.detach().clone(), world_size).item()
+                        kl_val.update(val_kl_scalar, action_chunk.shape[0])
+                        weighted_kl_val.update(kl_weight * val_kl_scalar, action_chunk.shape[0])
+
+                    val_pad = val_loss_dict.get("pad_bce", None)
+                    if val_pad is not None:
+                        val_pad_scalar = reduce_loss(val_pad.detach().clone(), world_size).item()
+                        pad_bce_val.update(val_pad_scalar, action_chunk.shape[0])
+
             if is_main_process(rank):
                 Logger.log_info(f"[validation] epoch={cur_epoch}, val_loss={loss_val.avg:.6f}")
+                val_breakdown = (
+                    f"[validation] epoch={cur_epoch}, recon={meter_value_or_na(recon_val)}, "
+                    f"kl={meter_value_or_na(kl_val)}, "
+                    f"weighted_kl={meter_value_or_na(weighted_kl_val)}, "
+                    f"pad_bce={meter_value_or_na(pad_bce_val)}"
+                )
+                Logger.log_info(val_breakdown)
 
                 avg_success = 0.0
                 saved = False
