@@ -54,11 +54,13 @@ def setup_ddp() -> Tuple[int, int, int]:
         # Not launched via torchrun – run as a regular single process.
         return 0, 0, 1
 
-    dist.init_process_group(backend="nccl")
+    backend = "nccl" if torch.cuda.is_available() else "gloo"
+    dist.init_process_group(backend=backend)
     rank = dist.get_rank()
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = dist.get_world_size()
-    torch.cuda.set_device(local_rank)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
     return rank, local_rank, world_size
 
 
@@ -243,7 +245,7 @@ def main(config):
     if world_size > 1:
         device = torch.device(f"cuda:{local_rank}")
     else:
-        device = torch.device("cuda:0")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ------------------------------------------------------------------
     # Datasets
@@ -296,9 +298,34 @@ def main(config):
         action_dim=sample_action.size(-1),
     ).to(device)
 
-    robot_state_dim, action_dim = _compute_and_set_norm_stats(
-        model, train_dataset, config, rank, world_size
-    )
+    # ------------------------------------------------------------------
+    # Optional checkpoint loading (BEFORE DDP wrapping)
+    # ------------------------------------------------------------------
+    resume_path = OmegaConf.select(config, "train.resume_from_checkpoint", default=None)
+    checkpoint = None
+
+    if resume_path is not None:
+        if is_main_process(rank):
+            Logger.log_info(colored(f"Loading checkpoint from {resume_path}", "cyan"))
+
+        checkpoint = torch.load(resume_path, map_location=device)
+
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+
+        model.load_state_dict(state_dict, strict=True)
+
+        if is_main_process(rank):
+            Logger.log_ok("Checkpoint loaded successfully.")
+
+        robot_state_dim = model.robot_state_dim
+        action_dim = model.action_dim
+    else:
+        robot_state_dim, action_dim = _compute_and_set_norm_stats(
+            model, train_dataset, config, rank, world_size
+        )
 
     if is_main_process(rank):
         Logger.log_info(f'Robot state dim: {colored(robot_state_dim, "red")}')
@@ -306,7 +333,7 @@ def main(config):
 
     # Wrap with DDP *after* norm stats are set (they live in raw model buffers).
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     # Convenience accessor for model internals regardless of DDP wrapping.
     raw_model = model.module if isinstance(model, DDP) else model
@@ -343,28 +370,20 @@ def main(config):
         optimizer=optimizer,
     )
 
-    kl_weight = OmegaConf.select(config, "train.kl_weight", default=None)
-    if kl_weight is None:
-        kl_weight = OmegaConf.select(config, "agent.kl_weight", default=None)
-    if kl_weight is None:
-        kl_weight = OmegaConf.select(config, "agent.instantiate_config.kl_weight", default=10.0)
-    kl_weight = float(kl_weight)
+    kl_weight = float(OmegaConf.select(config, "train.kl_weight", default=10.0))
 
     if is_main_process(rank):
         Logger.log_info(f"KL weight: {colored(kl_weight, 'red')}")
 
-    # ------------------------------------------------------------------
-    # Optional evaluator (rank-0 only)
-    # ------------------------------------------------------------------
-    evaluator = None
-    if is_main_process(rank) and getattr(config.benchmark, "evaluator_instantiate_config", None) is not None:
-        try:
-            evaluator = instantiate(
-                config=config.benchmark.evaluator_instantiate_config,
-                task_name=config.task_name,
-            )
-        except Exception as e:
-            Logger.log_warning(f"Failed to instantiate evaluator: {e}")
+    if resume_path is not None and isinstance(checkpoint, dict):
+        if OmegaConf.select(config, "train.resume_optimizer", default=True):
+            if "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if "scheduler_state_dict" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+            if is_main_process(rank):
+                Logger.log_info("Optimizer and scheduler state restored.")
 
     best_success = -1.0
     best_val_loss = float("inf")
@@ -373,7 +392,11 @@ def main(config):
     # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
-    for cur_epoch in range(config.train.num_epochs):
+    start_epoch = 0
+
+    if resume_path is not None:
+        start_epoch = checkpoint.get("epoch", 0) + 1
+    for cur_epoch in range(start_epoch, config.train.num_epochs):
 
         # Inform the sampler of the current epoch so shuffling is correct.
         if train_sampler is not None:
@@ -523,23 +546,25 @@ def main(config):
                 avg_success = 0.0
                 saved = False
 
-                if (
-                    evaluator is not None
-                    and config.evaluation.save_best_model
-                    and avg_success > best_success
-                ):
-                    best_success = avg_success
-                    saved = True
+
 
                 if config.evaluation.save_best_model and loss_val.avg < best_val_loss:
                     best_val_loss = loss_val.avg
-                    if evaluator is None:
-                        saved = True
+                    saved = True
 
                 if saved:
                     model_path = os.path.join(local_run_output_dir, "best_model.pth")
-                    # Save raw model weights (not the DDP wrapper).
-                    torch.save(raw_model.state_dict(), model_path)
+                    # Save raw model weights AND the optimizer and scheduler states
+                    # (not the DDP wrapper)
+                    torch.save(
+                        {
+                            "model_state_dict": raw_model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "epoch": cur_epoch,
+                        },
+                        model_path,
+                    )
                     Logger.log_info(f"Save best model to {colored(model_path, 'red')}")
 
                     with open(os.path.join(local_run_output_dir, "best_model.json"), "w") as f:
@@ -554,8 +579,13 @@ def main(config):
                         )
 
                 torch.save(
-                    raw_model.state_dict(),
-                    os.path.join(local_run_output_dir, "last_model.pth"),
+                    {
+                        "model_state_dict": raw_model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "epoch": cur_epoch,
+                    },
+                    os.path.join(local_run_output_dir, "last_model.pth")
                 )
 
         # Barrier keeps ranks in sync at the end of every epoch.
