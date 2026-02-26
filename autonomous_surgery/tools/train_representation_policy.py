@@ -95,7 +95,8 @@ def _compute_and_set_norm_stats(
     Rank-0 computes statistics over the training set and broadcasts them to
     every other rank so that all processes use identical normalisation values.
     """
-    device = torch.device(config.device if world_size == 1 else f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}")
+    world_size_1_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = torch.device(world_size_1_device if world_size == 1 else f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}")
 
     # Unwrap DDP to access model attributes / methods directly.
     raw_model = model.module if isinstance(model, DDP) else model
