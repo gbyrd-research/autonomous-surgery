@@ -344,11 +344,11 @@ class RepresentationEncoder(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# RepresentationEncoderNoDepth  (standalone — no dead parameters)
+# RepresentationEncoderNoDepth  (robot-state optional, no dead parameters)
 # ---------------------------------------------------------------------------
 
 class RepresentationEncoderNoDepth(nn.Module):
-    """Multi-view RGB + robot-state + text encoder (no depth branch)."""
+    """Multi-view RGB + optional robot-state + text encoder (no depth branch)."""
 
     def __init__(
             self,
@@ -356,22 +356,30 @@ class RepresentationEncoderNoDepth(nn.Module):
             robot_state_dim: int,
             model_emb_dim: int,
             resize_size: int,
+            use_robot_state: bool = True,
             **kwargs
     ):
         super().__init__()
+
         self.model_emb_dim = model_emb_dim
         self.resize_size   = resize_size
+        self.use_robot_state = use_robot_state
 
         self.image_encoder = image_encoder
 
-        # Probe encoder output dimension.
+        # ------------------------------------------------------------------
+        # Probe encoder output dimension
+        # ------------------------------------------------------------------
         with torch.no_grad():
             dummy = torch.zeros(1, 3, resize_size, resize_size)
             img_enc_emb_dim = image_encoder(dummy)[0].shape[-1]
 
-        # View embeddings and multi-view fusion.
+        # ------------------------------------------------------------------
+        # Multi-view components
+        # ------------------------------------------------------------------
         self.view_embed = nn.Parameter(torch.randn(3, 1, img_enc_emb_dim))
         self.view_fusion = _build_view_fusion(img_enc_emb_dim)
+
         self.view_attn = nn.Sequential(
             nn.Linear(img_enc_emb_dim, img_enc_emb_dim),
             nn.GELU(),
@@ -380,45 +388,81 @@ class RepresentationEncoderNoDepth(nn.Module):
 
         self.img_resize = _make_img_resize_transform(resize_size)
 
-        # Projection layers — only what this encoder actually uses.
+        # ------------------------------------------------------------------
+        # Projection layers
+        # ------------------------------------------------------------------
         self.img_cls_emb_to_model_emb_dim   = nn.Linear(img_enc_emb_dim, model_emb_dim)
         self.img_patch_emb_to_model_emb_dim = nn.Linear(img_enc_emb_dim, model_emb_dim)
-        self.robot_state_dim_to_model_emb_dim = nn.Linear(robot_state_dim, model_emb_dim)
 
-        # Text encoder (frozen).
+        if self.use_robot_state:
+            self.robot_state_dim_to_model_emb_dim = nn.Linear(
+                robot_state_dim,
+                model_emb_dim
+            )
+        else:
+            self.robot_state_dim_to_model_emb_dim = None
+
+        # ------------------------------------------------------------------
+        # Text encoder (frozen)
+        # ------------------------------------------------------------------
         self.tokenizer    = AutoTokenizer.from_pretrained("distilbert-base-uncased")
         self.text_encoder = AutoModel.from_pretrained("distilbert-base-uncased")
+
         for param in self.text_encoder.parameters():
             param.requires_grad = False
+
         self.text_encoder.eval()
         self.text_proj = nn.Linear(768, model_emb_dim)
 
-        # Final transformer encoder.
-        self.final_transformer, self.final_ln = _build_final_transformer_encoder(model_emb_dim)
-        max_tokens = 1 + (resize_size ** 2) + 1 + 1  # cls + patches + robot_state + text
-        self.final_pos_emb = nn.Parameter(torch.zeros(1, max_tokens, model_emb_dim))
+        # ------------------------------------------------------------------
+        # Final transformer
+        # ------------------------------------------------------------------
+        self.final_transformer, self.final_ln = \
+            _build_final_transformer_encoder(model_emb_dim)
+
+        # cls + patches + text (+ robot optional)
+        max_tokens = 1 + (resize_size ** 2) + 1
+        if self.use_robot_state:
+            max_tokens += 1
+
+        self.final_pos_emb = nn.Parameter(
+            torch.zeros(1, max_tokens, model_emb_dim)
+        )
         nn.init.trunc_normal_(self.final_pos_emb, std=0.02)
 
+    # ----------------------------------------------------------------------
+    # Device helper
+    # ----------------------------------------------------------------------
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
+    # ----------------------------------------------------------------------
+    # Forward
+    # ----------------------------------------------------------------------
     def forward(
         self,
         endoscope_image: torch.Tensor,
         wrist_l: torch.Tensor,
         wrist_r: torch.Tensor,
-        robot_states: torch.Tensor,
-        text: List[str],
+        robot_states: torch.Tensor = None,
+        text: List[str] = None,
     ):
+        # --------------------------------------------------------------
+        # Resize images
+        # --------------------------------------------------------------
         endo = self.img_resize(endoscope_image)
         wl   = self.img_resize(wrist_l)
         wr   = self.img_resize(wrist_r)
 
+        # --------------------------------------------------------------
+        # Image encoding
+        # --------------------------------------------------------------
         cls_e,  _, patch_e  = self.image_encoder(endo)
         cls_wl, _, patch_wl = self.image_encoder(wl)
         cls_wr, _, patch_wr = self.image_encoder(wr)
 
+        # Add view embeddings
         patch_e  = patch_e  + self.view_embed[0]
         patch_wl = patch_wl + self.view_embed[1]
         patch_wr = patch_wr + self.view_embed[2]
@@ -426,24 +470,58 @@ class RepresentationEncoderNoDepth(nn.Module):
         multi_view_tokens   = torch.cat([patch_e, patch_wl, patch_wr], dim=1)
         fused_vision_tokens = self.view_fusion(multi_view_tokens)
 
-        cls_stack    = torch.stack([cls_e, cls_wl, cls_wr], dim=1)  # (B, 3, D)
+        # Attention-weighted CLS fusion
+        cls_stack    = torch.stack([cls_e, cls_wl, cls_wr], dim=1)
         attn_logits  = self.view_attn(cls_stack)
         attn_weights = torch.softmax(attn_logits, dim=1)
-        global_vision_cls = (cls_stack * attn_weights).sum(dim=1)    # (B, D)
+        global_vision_cls = (cls_stack * attn_weights).sum(dim=1)
 
+        # Project to model dim
         global_vision_cls   = self.img_cls_emb_to_model_emb_dim(global_vision_cls)
         fused_vision_tokens = self.img_patch_emb_to_model_emb_dim(fused_vision_tokens)
 
-        robot_state_tokens = self.robot_state_dim_to_model_emb_dim(robot_states.unsqueeze(1))
+        token_list = [
+            global_vision_cls,
+            fused_vision_tokens
+        ]
 
-        # Text encoding.
-        tok = self.tokenizer(text, padding=True, truncation=True, return_tensors="pt").to(self.device)
+        # --------------------------------------------------------------
+        # Optional robot state branch
+        # --------------------------------------------------------------
+        if self.use_robot_state:
+            if robot_states is None:
+                raise ValueError("robot_states must be provided when use_robot_state=True")
+
+            robot_state_tokens = self.robot_state_dim_to_model_emb_dim(
+                robot_states.unsqueeze(1)
+            )
+            token_list.append(robot_state_tokens)
+
+        # --------------------------------------------------------------
+        # Text encoding
+        # --------------------------------------------------------------
+        if text is None:
+            raise ValueError("text input must be provided")
+
+        tok = self.tokenizer(
+            text,
+            padding=True,
+            truncation=True,
+            return_tensors="pt"
+        ).to(self.device)
+
         with torch.no_grad():
             text_feat = self.text_encoder(**tok).last_hidden_state[:, 0]
-        text_feat = self.text_proj(text_feat).unsqueeze(1)
 
-        raw_tokens = torch.cat([global_vision_cls, fused_vision_tokens, robot_state_tokens, text_feat], dim=1)
+        text_feat = self.text_proj(text_feat).unsqueeze(1)
+        token_list.append(text_feat)
+
+        # --------------------------------------------------------------
+        # Final transformer
+        # --------------------------------------------------------------
+        raw_tokens = torch.cat(token_list, dim=1)
         N = raw_tokens.shape[1]
+
         tokens = raw_tokens + self.final_pos_emb[:, :N]
         tokens = self.final_ln(self.final_transformer(tokens))
 

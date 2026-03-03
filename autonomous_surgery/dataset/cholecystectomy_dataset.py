@@ -168,7 +168,7 @@ class CholecystectomyACTDataset(Dataset):
             root=root,
             tolerance_s=tolerance_s,
             delta_timestamps={
-                "action": [i / info["fps"] for i in range(chunk_size)],
+                "action_hybrid_relative": [i / info["fps"] for i in range(chunk_size)],
             },
         )
 
@@ -189,8 +189,8 @@ class CholecystectomyACTDataset(Dataset):
         wrist_r = sample["observation.images.wrist.right"]
         wrist_l = sample["observation.images.wrist.left"]
         state = sample["observation.state"]
-        action_chunk = sample["action"]
-        action_is_pad = sample["action_is_pad"]
+        action_chunk = sample["action_hybrid_relative"]
+        action_is_pad = sample["action_hybrid_relative_is_pad"]
         instruction_text = sample["instruction.text"]
 
         return (
@@ -206,8 +206,8 @@ class CholecystectomyACTDataset(Dataset):
     
 if __name__=="__main__":
     act_dataset = CholecystectomyACTDataset(
-        repo_id="surpass/cholecystectomy_dummy", 
-        root="/home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_dummy",
+        repo_id="surpass/cholecystectomy_accelerated", 
+        root="/home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_accelerated",
         tolerance_s=1e-4,
         split="test"
     )

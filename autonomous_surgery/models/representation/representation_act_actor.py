@@ -72,7 +72,7 @@ class RepresentationACTActor(nn.Module):
         self.sample_prior = bool(sample_prior)
 
         # robot state -> d_model
-        self.robot_to_d = nn.Linear(self.robot_state_dim, self.model_emb_dim)
+        # self.robot_to_d = nn.Linear(self.robot_state_dim, self.model_emb_dim)
 
         # ----- posterior q(z|a,obs): TransformerEncoder over [CLS, OBS, a1..aK] -----
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.model_emb_dim))

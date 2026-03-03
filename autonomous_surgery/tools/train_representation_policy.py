@@ -305,6 +305,11 @@ def main(config):
         action_dim=sample_action.size(-1),
     ).to(device)
 
+    if int(os.environ.get("RANK", "0")) == 0:
+        for i, (name, p) in enumerate(model.named_parameters()):
+            if i in (137, 138):
+                print("UNUSED IDX", i, "NAME", name, "SHAPE", tuple(p.shape), "requires_grad", p.requires_grad)
+
     # ------------------------------------------------------------------
     # Optional checkpoint loading (BEFORE DDP wrapping)
     # ------------------------------------------------------------------

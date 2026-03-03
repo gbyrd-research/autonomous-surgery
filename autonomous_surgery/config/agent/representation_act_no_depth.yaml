@@ -38,3 +38,4 @@ instantiate_config:
     model_emb_dim: ${agent.instantiate_config.model_emb_dim}
     patched_dim: 16
     resize_size: 256
+    use_robot_state: true
