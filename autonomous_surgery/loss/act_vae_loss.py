@@ -22,7 +22,7 @@ Tensor = torch.Tensor
 
 def _masked_mean(x: Tensor, mask: Tensor, eps: float = 1e-8) -> Tensor:
     x = x * mask.to(dtype=x.dtype)
-    denom = mask.to(dtype=x.dtype).sum().clamp_min(eps)
+    denom = mask.to(dtype=x.dtype).sum().clamp_min(eps) * x.shape[-1]   # <-- include action dimension
     return x.sum() / denom
 
 
