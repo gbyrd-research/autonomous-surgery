@@ -299,16 +299,28 @@ def main(config):
     sample_batch = next(iter(DataLoaderConstructor(train_dataset, shuffle=False)))
     _, _, _, sample_robot_state, sample_action, _, _ = sample_batch
 
-    model = instantiate(
-        config=config.agent.instantiate_config,
-        robot_state_dim=sample_robot_state.size(-1),
-        action_dim=sample_action.size(-1),
-    ).to(device)
+    inferred_robot_state_dim = int(sample_robot_state.size(-1))
+    inferred_action_dim = int(sample_action.size(-1))
 
-    if int(os.environ.get("RANK", "0")) == 0:
-        for i, (name, p) in enumerate(model.named_parameters()):
-            if i in (137, 138):
-                print("UNUSED IDX", i, "NAME", name, "SHAPE", tuple(p.shape), "requires_grad", p.requires_grad)
+    # Instantiate nested encoder explicitly so runtime-inferred dims are used
+    # consistently for both actor and encoder.
+    actor_cfg = OmegaConf.create(
+        OmegaConf.to_container(config.agent.instantiate_config, resolve=True)
+    )
+    encoder_cfg = actor_cfg.representation_encoder
+    del actor_cfg["representation_encoder"]
+
+    representation_encoder = instantiate(
+        config=encoder_cfg,
+        robot_state_dim=inferred_robot_state_dim,
+    )
+
+    model = instantiate(
+        config=actor_cfg,
+        representation_encoder=representation_encoder,
+        robot_state_dim=inferred_robot_state_dim,
+        action_dim=inferred_action_dim,
+    ).to(device)
 
     # ------------------------------------------------------------------
     # Optional checkpoint loading (BEFORE DDP wrapping)
