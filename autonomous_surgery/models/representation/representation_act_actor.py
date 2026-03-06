@@ -131,31 +131,55 @@ class RepresentationACTActor(nn.Module):
 
         # Auto-Normalization Buffers
         # These will be saved in the .pth file but not trained via gradient descent.
-        self.register_buffer('action_mean', torch.zeros(self.action_dim))
-        self.register_buffer('action_std', torch.ones(self.action_dim))
-        self.register_buffer('qpos_mean', torch.zeros(self.robot_state_dim))
-        self.register_buffer('qpos_std', torch.ones(self.robot_state_dim))
-        self.register_buffer('is_norm_initialized', torch.tensor(0, dtype=torch.bool))
+        self.register_buffer("action_min", torch.zeros(action_dim))
+        self.register_buffer("action_max", torch.ones(action_dim))
+
+        self.register_buffer("action_mean", torch.zeros(action_dim))
+        self.register_buffer("action_std", torch.ones(action_dim))
+
+        self.register_buffer("qpos_mean", torch.zeros(robot_state_dim))
+        self.register_buffer("qpos_std", torch.ones(robot_state_dim))
+
+        self.register_buffer("is_norm_initialized", torch.tensor(False))
 
     # normalization
-    def set_norm_stats(self, action_mean, action_std, qpos_mean, qpos_std):
-        """Called by training script to inject dataset statistics."""
-        action_std = torch.clip(action_std, min=1e-5)
-        qpos_std = torch.clip(qpos_std, min=1e-5)
+    def set_norm_stats(
+        self,
+        action_min,
+        action_max,
+        action_mean,
+        action_std,
+        qpos_mean,
+        qpos_std
+    ):
 
-        # Use copy_ instead of .data = ... to guarantee the buffer stays
-        # on the correct device and retains its registration with DDP.
+        self.action_min.copy_(action_min)
+        self.action_max.copy_(action_max)
+
         self.action_mean.copy_(action_mean)
         self.action_std.copy_(action_std)
+
         self.qpos_mean.copy_(qpos_mean)
         self.qpos_std.copy_(qpos_std)
 
-        # copy_ keeps the tensor on its original device — no need to pass device explicitly
         self.is_norm_initialized.fill_(True)
+
+        print("Normalization stats loaded.")
 
         print("ACTPolicy: Normalization stats updated and locked into model buffers.")
 
-    def normalize_actions(self, actions: torch.Tensor) -> torch.Tensor:
+    def normalize_actions_linear_interpolation(self, actions):
+
+        if not self.is_norm_initialized:
+            return actions
+
+        range_ = (self.action_max - self.action_min).clamp(min=1e-6)
+
+        actions_norm = 2 * (actions - self.action_min) / range_ - 1
+
+        return actions_norm
+
+    def normalize_actions_mean_std(self, actions: torch.Tensor) -> torch.Tensor:
         if not self.is_norm_initialized:
             return actions
         return (actions - self.action_mean) / self.action_std
@@ -165,10 +189,21 @@ class RepresentationACTActor(nn.Module):
             return qpos
         return (qpos - self.qpos_mean) / self.qpos_std
 
-    def unnormalize_actions(self, actions_norm: torch.Tensor) -> torch.Tensor:
+    def unnormalize_actions_mean_std(self, actions_norm: torch.Tensor) -> torch.Tensor:
         if not self.is_norm_initialized:
             return actions_norm
         return actions_norm * self.action_std + self.action_mean
+    
+    def unnormalize_actions_linear_interpolation(self, actions_norm):
+
+        if not self.is_norm_initialized:
+            return actions_norm
+
+        range_ = (self.action_max - self.action_min).clamp(min=1e-6)
+
+        actions = (actions_norm + 1) * 0.5 * range_ + self.action_min
+
+        return actions
 
     # ---------------------------------------------------------------------
     # posterior q(z|a,obs) and prior p(z|obs)
@@ -205,6 +240,7 @@ class RepresentationACTActor(nn.Module):
         stats = self.posterior_proj(h_cls)                            # [B,2Z]
         mu = stats[:, : self.latent_dim]
         logvar = stats[:, self.latent_dim :]
+
         return mu, logvar
 
     def _prior(self, global_d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -234,7 +270,7 @@ class RepresentationACTActor(nn.Module):
         wrist_r: torch.Tensor,
         robot_states: torch.Tensor,
         texts: Any = None,
-        action_chunk: Optional[torch.Tensor] = None,   # [B,K,A] in training
+        action_chunk_norm: Optional[torch.Tensor] = None,   # [B,K,A] in training
         action_is_pad: Optional[torch.Tensor] = None,    # [B,K] bool
         depth: Optional[torch.Tensor] = None
     ):
@@ -254,16 +290,12 @@ class RepresentationACTActor(nn.Module):
         mu, logvar = None, None
         
         # 3. Handle Actions (Training vs Inference)
-        if action_chunk is not None:
+        if action_chunk_norm is not None:
             # Training Mode
-            if action_chunk.dim() != 3 or action_chunk.shape[1] != self.K:
-                raise ValueError(f"actions must be [B,K,A] with K={self.K}, got {tuple(action_chunk.shape)}")
+            if action_chunk_norm.dim() != 3 or action_chunk_norm.shape[1] != self.K:
+                raise ValueError(f"actions must be [B,K,A] with K={self.K}, got {tuple(action_chunk_norm.shape)}")
             
-            # Normalize GT Actions for VAE posterior
-            # The VAE learns to reconstruct Normalized actions (N(0,1))
-            actions_norm = self.normalize_actions(action_chunk)
-            
-            mu, logvar = self._posterior(global_token, actions_norm, action_is_pad)
+            mu, logvar = self._posterior(global_token, action_chunk_norm, action_is_pad)
             z = reparametrize(mu, logvar)   # posterior sample
         else:
             # Inference Mode
@@ -271,6 +303,9 @@ class RepresentationACTActor(nn.Module):
                 z = reparametrize(prior_mu, prior_logvar)
             else:
                 z = prior_mu
+
+        # debug
+        z = torch.zeros_like(z)
 
         # Decoder / Policy Head
         latent_d = self.latent_out(z)       # [B,D]
@@ -289,7 +324,7 @@ class RepresentationACTActor(nn.Module):
         # Return predictions in Real Physical Scale so external Loss/Metric functions work as expected.
         # Note: Ideally loss should be computed in Normalized space, but un-normalizing here ensures
         # compatibility with existing code that expects raw units.
-        if action_chunk is not None:
+        if action_chunk_norm is not None:
             # 【Training mode】
             # Directly return the normalized predictions!
             # This way the loss is computed in normalized space, and the weights between
@@ -307,11 +342,10 @@ class RepresentationACTActor(nn.Module):
                 )
             return actions_hat_norm
         else:
-            actions_hat = self.unnormalize_actions(actions_hat_norm)
 
             if self.return_dict:
                 return ActOutput(
-                    actions=actions_hat,
+                    actions=actions_hat_norm,
                     is_pad_hat=is_pad_hat,
                     mu=mu,
                     logvar=logvar,

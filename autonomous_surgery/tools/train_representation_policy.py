@@ -470,7 +470,7 @@ def main(config):
                 actions_norm,
                 kl_weight=kl_weight,
                 is_pad=action_is_pad,
-                include_is_pad_loss=True
+                include_is_pad_loss=config.benchmark.loss_func.include_is_pad_loss
             )
 
             if isinstance(loss_result, tuple):
@@ -589,7 +589,7 @@ def main(config):
                         actions_norm,
                         kl_weight=kl_weight,
                         is_pad=action_is_pad,
-                        include_is_pad_loss=True
+                        include_is_pad_loss=config.benchmark.loss_func.include_is_pad_loss
                     )
 
                     if isinstance(loss_result, tuple):

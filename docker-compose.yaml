@@ -16,11 +16,16 @@ services:
               capabilities: [gpu]
 
     environment:
+      # ---------------- ROS Networking ----------------
+      - ROS_MASTER_URI=http://10.162.34.59:11311   # <-- CHANGE THIS
+      - ROS_IP=10.162.34.58                        # <-- CHANGE THIS
+      # ------------------------------------------------
+
       - SSH_AUTH_SOCK=/ssh-agent
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_HOME=/workspace/.hf
-      - HF_TOKEN=<your_huggingface_token_here>
+      - HF_TOKEN=${HF_TOKEN}
 
     volumes:
       - ./:/workspace
@@ -35,4 +40,3 @@ services:
 
 volumes:
   conda_envs:
-

@@ -5,6 +5,7 @@ dataset_instantiate_config:
   repo_id: surpass/cholecystectomy_accelerated
   root: /home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_accelerated
   tolerance_s: 1e-4
-
+  
 loss_func:
   _target_: autonomous_surgery.loss.act_vae_loss.act_vae_loss
+  include_is_pad_loss: false

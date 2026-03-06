@@ -14,6 +14,8 @@ from transformers import AutoTokenizer, AutoImageProcessor, AutoModel
 class CrossAttentionBlock(nn.Module):
     def __init__(self, emb_dim: int, num_heads: int, dropout: float = 0.1):
         super().__init__()
+        # debug
+        dropout = 0
         self.attn = nn.MultiheadAttention(
             embed_dim=emb_dim,
             num_heads=num_heads,
@@ -183,11 +185,13 @@ def _make_img_resize_transform(resize_size: int):
 
 
 def _build_final_transformer_encoder(model_emb_dim: int, num_layers: int = 6, num_heads: int = 8):
+    # debug
+    dropout = 0
     encoder_layer = nn.TransformerEncoderLayer(
         d_model=model_emb_dim,
         nhead=num_heads,
         dim_feedforward=4 * model_emb_dim,
-        dropout=0.1,
+        dropout=dropout,
         activation="gelu",
         batch_first=True,
         norm_first=True,

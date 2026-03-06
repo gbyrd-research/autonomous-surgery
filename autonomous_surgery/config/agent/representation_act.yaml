@@ -4,7 +4,7 @@ instantiate_config:
 
   action_dim: 16
   robot_state_dim: 16
-  chunk_size: 16
+  chunk_size: 50
   model_emb_dim: 512
 
   # transformer parameters
@@ -19,11 +19,10 @@ instantiate_config:
 
   return_dict: true
   sample_prior: false
-  use_depth: true
 
   # Encoders
   representation_encoder:
-    _target_: autonomous_surgery.models.representation.representation_encoder.RepresentationEncoder
+    _target_: autonomous_surgery.models.representation.representation_encoder.RepresentationEncoderNoDepth
 
     image_encoder:
       _target_: autonomous_surgery.models.representation.representation_encoder.DinoV3Encoder
@@ -39,3 +38,4 @@ instantiate_config:
     model_emb_dim: ${agent.instantiate_config.model_emb_dim}
     patched_dim: 16
     resize_size: 256
+    use_robot_state: true

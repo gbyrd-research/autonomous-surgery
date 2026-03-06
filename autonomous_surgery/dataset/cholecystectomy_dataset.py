@@ -221,7 +221,9 @@ class CholecystectomyACTDataset_GraspOnly_PSM1_Only(CholecystectomyACTDataset):
         for idx in tqdm(indices):
             for i in range(1, self.chunk_size + 1):
                 if idx + i not in indices_set:
-                    self.global_idxs_to_chunk_len[idx] = i - 1
+                    # Keep the anchor step as valid supervision.
+                    # `i` here means the first invalid offset (1-based).
+                    self.global_idxs_to_chunk_len[idx] = i
                     break
             if idx not in self.global_idxs_to_chunk_len:
                 self.global_idxs_to_chunk_len[idx] = self.chunk_size
@@ -282,7 +284,63 @@ class CholecystectomyACTDataset_GraspOnly_PSM1_Only(CholecystectomyACTDataset):
             instruction_text,
         )
 
+class Debug(CholecystectomyACTDataset_GraspOnly_PSM1_Only):
+    """
+    Filters dataset to produce only samples from the "grasp" action and only
+    return actions corresponding to PSM1.
+    """
 
+    def __init__(
+        self,
+        repo_id: str,
+        root: str | Path,
+        tolerance_s: float,
+        split: str,
+        chunk_size: int = 16
+    ):
+        super().__init__(
+            repo_id,
+            root,
+            tolerance_s,
+            split,
+            chunk_size
+        )
+
+        self.samples = list()
+        for i in range(128):
+            self.samples.append(self.dataset[self.global_idxs_to_chunk_len[i]])
+
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+
+        # get the index from the randomly sampled list of indices given by the
+        # dataset split
+        global_idx = self.idxs[idx]
+
+        sample = self.samples[idx]
+
+        endoscope_image = sample["observation.images.endoscope.left"]
+        wrist_r = sample["observation.images.wrist.right"]
+        wrist_l = sample["observation.images.wrist.left"]
+        state = sample["observation.state"]
+        action_chunk = sample["action_hybrid_relative"]
+        action_is_pad = sample["action_hybrid_relative_is_pad"].clone().to(dtype=torch.bool)
+        instruction_text = sample["instruction.text"]
+
+        # modify action_is_pad based on precomputed chunk length if needed
+        action_is_pad[self.global_idxs_to_chunk_len[global_idx]:] = True
+
+        return (
+            endoscope_image,
+            wrist_l,
+            wrist_r,
+            state[:6],           # only provide state for the PSM1
+            action_chunk[:, :6],    # only provide action chunk for the PSM1
+            action_is_pad,
+            instruction_text,
+        )  
 
 if __name__=="__main__":
     act_dataset = CholecystectomyACTDataset(

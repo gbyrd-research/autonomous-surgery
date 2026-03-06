@@ -1,7 +1,7 @@
 defaults:
   - _self_
-  - agent: representation_act
-  - benchmark: cholecystectomy_act
+  - agent: representation_act_debug
+  - benchmark: cholecystectomy_act_debug
 
 use_depth: False
 
@@ -9,8 +9,8 @@ use_depth: False
 seed: 0
 
 dataloader:
-  batch_size: 32
-  num_workers: 32
+  batch_size: 1
+  num_workers: 1
   shuffle: True
   drop_last: True
   pin_memory: True
