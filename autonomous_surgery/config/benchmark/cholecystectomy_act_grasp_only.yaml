@@ -1,7 +1,7 @@
-name: CholecystectomyACT
+name: CholecystectomyACTGraspOnly
 
 dataset_instantiate_config:
-  _target_: autonomous_surgery.dataset.CholecystectomyACTDataset
+  _target_: autonomous_surgery.dataset.CholecystectomyACTDataset_GraspOnly_PSM1_Only
   repo_id: surpass/cholecystectomy_accelerated
   root: /home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_accelerated
   tolerance_s: 1e-4

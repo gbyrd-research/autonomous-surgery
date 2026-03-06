@@ -1,682 +1,371 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-autonomous_surgery/tools/train_representation_policy_new.py
-
-Representation ACT training script with torchrun / DistributedDataParallel (DDP) support.
-
-Launch with:
-    torchrun --nproc_per_node=<NUM_GPUS> train_representation_policy_new.py [hydra overrides]
-
-Single-GPU / CPU (unchanged behaviour):
-    python train_representation_policy_new.py [hydra overrides]
-"""
-
 from __future__ import annotations
 
-import json
-import functools
 import os
 import pathlib
-from typing import Optional, Tuple, Any, Dict
 
 import hydra
 import torch
 import torch.distributed as dist
+
+from hydra.utils import instantiate
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-from hydra.utils import call, instantiate
-from omegaconf import OmegaConf
-from termcolor import colored
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
-from autonomous_surgery.helpers.common import Logger, WandBLogger, set_seed
+from autonomous_surgery.helpers.common import Logger, set_seed
 from autonomous_surgery.helpers.pytorch import AverageMeter
+from autonomous_surgery.loss.act_vae_loss import act_vae_loss
 
 
-# ---------------------------------------------------------------------------
-# DDP helpers
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------
+# DDP setup
+# -----------------------------------------------------------
 
-def setup_ddp() -> Tuple[int, int, int]:
-    """
-    Initialise the default process group when launched via torchrun.
-    Falls back gracefully to single-process mode when the env vars are absent.
+def setup_ddp():
 
-    Returns
-    -------
-    rank        : global rank of this process (0 … world_size-1)
-    local_rank  : local rank on this node  (used to select the GPU)
-    world_size  : total number of processes
-    """
-    if "RANK" not in os.environ:
-        # Not launched via torchrun – run as a regular single process.
-        return 0, 0, 1
+    dist.init_process_group(backend="nccl")
 
-    backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(backend=backend)
     rank = dist.get_rank()
     local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = dist.get_world_size()
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    return rank, local_rank, world_size
+
+    torch.cuda.set_device(local_rank)
+
+    return rank, local_rank
 
 
 def cleanup_ddp():
-    if dist.is_available() and dist.is_initialized():
-        dist.destroy_process_group()
+    dist.destroy_process_group()
 
 
-def is_main_process(rank: int) -> bool:
-    return rank == 0
+# -----------------------------------------------------------
+# Compute normalization statistics
+# -----------------------------------------------------------
+
+def compute_norm_stats(model, dataset, config):
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=32,
+        shuffle=True,
+        num_workers=config.dataloader.num_workers,
+    )
+
+    actions = []
+    states = []
+
+    for batch in tqdm(loader, desc="Computing normalization stats"):
+
+        _, _, _, state, action, _, _ = batch
+
+        actions.append(action)
+        states.append(state)
+
+        if len(actions) > 200:
+            break
+
+    actions = torch.cat(actions)
+    states = torch.cat(states)
+
+    action_min = actions.amin(dim=(0,1))
+    action_max = actions.amax(dim=(0,1))
+    action_mean = actions.mean(dim=(0,1))
+    action_std = actions.std(dim=(0,1))
+
+    state_mean = states.mean(dim=(0,1))
+    state_std = states.std(dim=(0,1)).clamp(min=1e-5)
+
+    model.set_norm_stats(
+        action_min,
+        action_max,
+        action_mean,
+        action_std,
+        state_mean,
+        state_std
+    )
+
+    Logger.log_info("Normalization stats computed")
 
 
-# ---------------------------------------------------------------------------
-# Dataset fingerprint / normalisation persistence
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------
+# Broadcast model buffers (normalization stats)
+# -----------------------------------------------------------
+
+def broadcast_model_buffers(model):
+
+    for buffer in model.buffers():
+        dist.broadcast(buffer, src=0)
 
 
-def _to_item(v):
-    if torch.is_tensor(v):
-        return v.item()
-    return v
-
-
-# ---------------------------------------------------------------------------
-# Normalisation-stat computation (rank-0 computes, then broadcasts to all)
-# ---------------------------------------------------------------------------
-
-def _compute_and_set_norm_stats(
-    model, train_dataset, config, rank: int, world_size: int
-) -> Tuple[int, int]:
-    """
-    Rank-0 computes statistics over the training set and broadcasts them to
-    every other rank so that all processes use identical normalisation values.
-    """
-    world_size_1_device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    device = torch.device(world_size_1_device if world_size == 1 else f"cuda:{int(os.environ.get('LOCAL_RANK', 0))}")
-
-    # Unwrap DDP to access model attributes / methods directly.
-    raw_model = model.module if isinstance(model, DDP) else model
-
-    # ------------------------------------------------------------------
-    # 1.  Rank-0 computes stats
-    # ------------------------------------------------------------------
-    if is_main_process(rank):
-        Logger.print_seperator()
-        Logger.log_info(colored(" [Auto-Norm] Calculating dataset statistics...", "cyan"))
-
-        stats_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=32,
-            shuffle=True,
-            num_workers=config.dataloader.num_workers,
-        )
-
-        all_actions, all_qpos = [], []
-        collected_samples = 0
-        max_samples = 10_000
-
-        raw_model.eval()
-        with torch.no_grad():
-            for batch in tqdm(stats_loader, desc="Computing Stats"):
-                (
-                    endoscope_images,
-                    wrist_l,
-                    wrist_r,
-                    robot_states,
-                    actions,
-                    is_pad,
-                    instruction_text,
-                ) = batch
-
-                all_actions.append(actions)
-                all_qpos.append(robot_states)
-
-                collected_samples += actions.shape[0]
-                if collected_samples >= max_samples:
-                    break
-
-        all_actions = torch.cat(all_actions, dim=0)
-        flat_actions = all_actions.reshape(-1, all_actions.shape[-1])
-        action_mean = flat_actions.mean(dim=0)
-        action_std = torch.clamp(flat_actions.std(dim=0), min=1e-5)
-
-        all_qpos = torch.cat(all_qpos, dim=0)
-        flat_qpos = all_qpos.reshape(-1, all_qpos.shape[-1])
-        qpos_mean = flat_qpos.mean(dim=0)
-        qpos_std = torch.clamp(flat_qpos.std(dim=0), min=1e-5)
-
-        Logger.log_info(f" [Auto-Norm] Action Mean: {action_mean[:3].tolist()}...")
-        Logger.log_info(f" [Auto-Norm] Action Std:  {action_std[:3].tolist()}...")
-        Logger.print_seperator()
-    else:
-        # Non-root ranks create empty placeholders; shapes are filled after broadcast.
-        action_mean = torch.zeros(1)
-        action_std = torch.zeros(1)
-        qpos_mean = torch.zeros(1)
-        qpos_std = torch.zeros(1)
-
-    # ------------------------------------------------------------------
-    # 2.  Broadcast from rank-0 to all other ranks
-    # ------------------------------------------------------------------
-    if world_size > 1:
-        # Broadcast tensor shapes first so non-root ranks can allocate.
-        shapes = torch.zeros(2, dtype=torch.long, device=device)
-        if is_main_process(rank):
-            shapes[0] = action_mean.shape[0]
-            shapes[1] = qpos_mean.shape[0]
-
-        dist.broadcast(shapes, src=0)
-
-        a_dim, q_dim = shapes.tolist()
-
-        for tensor, dim, name in [
-            (action_mean,     a_dim,  "action_mean"),
-            (action_std,      a_dim,  "action_std"),
-            (qpos_mean,       q_dim,  "qpos_mean"),
-            (qpos_std,        q_dim,  "qpos_std"),
-        ]:
-            if not is_main_process(rank):
-                tensor = torch.zeros(dim, device=device)
-            else:
-                tensor = tensor.to(device)
-
-            dist.broadcast(tensor, src=0)
-
-            # Re-bind in local scope so set_norm_stats receives correct tensors.
-            if name == "action_mean":      action_mean      = tensor
-            elif name == "action_std":     action_std       = tensor
-            elif name == "qpos_mean":      qpos_mean        = tensor
-            elif name == "qpos_std":       qpos_std         = tensor
-    else:
-        action_mean      = action_mean.to(device)
-        action_std       = action_std.to(device)
-        qpos_mean        = qpos_mean.to(device)
-        qpos_std         = qpos_std.to(device)
-
-    # ------------------------------------------------------------------
-    # 3.  Inject into the model on every rank
-    # ------------------------------------------------------------------
-    if hasattr(raw_model, "set_norm_stats"):
-        raw_model.set_norm_stats(
-            action_mean, action_std,
-            qpos_mean, qpos_std,
-        )
-        if is_main_process(rank):
-            Logger.log_info(
-                colored(" [Auto-Norm] Statistics injected into model successfully!", "green")
-            )
-    else:
-        if is_main_process(rank):
-            Logger.log_warning(
-                colored(" [Warning] Model missing 'set_norm_stats'. Auto-Norm skipped.", "yellow")
-            )
-
-    return int(qpos_mean.shape[0]), int(action_mean.shape[0])
-
-
-# ---------------------------------------------------------------------------
-# Loss reduction across ranks
-# ---------------------------------------------------------------------------
-
-def reduce_loss(loss: torch.Tensor, world_size: int) -> torch.Tensor:
-    """Average loss tensor across all DDP processes."""
-    if world_size > 1:
-        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-        loss = loss / world_size
-    return loss
-
-
-def meter_value_or_na(meter: AverageMeter) -> str:
-    if meter.count == 0:
-        return "n/a"
-    return f"{meter.avg:.6f}"
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------
+# Training
+# -----------------------------------------------------------
 
 @hydra.main(version_base=None, config_path="../config", config_name="train_representation_policy")
 def main(config):
 
-    rank, local_rank, world_size = setup_ddp()
+    rank, local_rank = setup_ddp()
 
-    # Each rank logs to its own seed offset so RNG states diverge intentionally.
     set_seed(config.seed + rank)
 
-    # Determine per-rank device.
-    if world_size > 1:
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{local_rank}")
 
-    # ------------------------------------------------------------------
-    # Datasets
-    # ------------------------------------------------------------------
+    # H100 optimizations
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
+
+    # -------------------------------------------------------
+    # Dataset
+    # -------------------------------------------------------
+
     train_dataset = instantiate(
         config=config.benchmark.dataset_instantiate_config,
         chunk_size=config.agent.instantiate_config.chunk_size,
         split="train",
     )
+
     valid_dataset = instantiate(
         config=config.benchmark.dataset_instantiate_config,
         chunk_size=config.agent.instantiate_config.chunk_size,
         split="test",
     )
 
-    if len(train_dataset) == 0:
-        raise RuntimeError("Train dataset is empty.")
+    train_sampler = DistributedSampler(train_dataset)
+    valid_sampler = DistributedSampler(valid_dataset, shuffle=False)
 
-    # ------------------------------------------------------------------
-    # Samplers  (DistributedSampler shards data across ranks)
-    # ------------------------------------------------------------------
-    train_sampler = (
-        DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=config.dataloader.shuffle)
-        if world_size > 1
-        else None
-    )
-    valid_sampler = (
-        DistributedSampler(valid_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-        if world_size > 1
-        else None
-    )
-
-    DataLoaderConstructor = functools.partial(
-        torch.utils.data.DataLoader,
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         batch_size=config.dataloader.batch_size,
+        sampler=train_sampler,
         num_workers=config.dataloader.num_workers,
-        pin_memory=config.dataloader.pin_memory,
-        drop_last=config.dataloader.drop_last,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
     )
 
-    # ------------------------------------------------------------------
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset,
+        batch_size=config.dataloader.batch_size,
+        sampler=valid_sampler,
+        num_workers=config.dataloader.num_workers,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
+    )
+
+    # -------------------------------------------------------
+    # Infer dimensions
+    # -------------------------------------------------------
+
+    sample_batch = next(iter(train_loader))
+    _, _, _, sample_state, sample_action, _, _ = sample_batch
+
+    state_dim = sample_state.shape[-1]
+    action_dim = sample_action.shape[-1]
+
+    # -------------------------------------------------------
     # Model
-    # ------------------------------------------------------------------
-    sample_batch = next(iter(DataLoaderConstructor(train_dataset, shuffle=False)))
-    _, _, _, sample_robot_state, sample_action, _, _ = sample_batch
+    # -------------------------------------------------------
 
-    inferred_robot_state_dim = int(sample_robot_state.size(-1))
-    inferred_action_dim = int(sample_action.size(-1))
-
-    # Instantiate nested encoder explicitly so runtime-inferred dims are used
-    # consistently for both actor and encoder.
-    actor_cfg = OmegaConf.create(
-        OmegaConf.to_container(config.agent.instantiate_config, resolve=True)
-    )
-    encoder_cfg = actor_cfg.representation_encoder
-    del actor_cfg["representation_encoder"]
+    encoder_cfg = config.agent.instantiate_config.representation_encoder
 
     representation_encoder = instantiate(
         config=encoder_cfg,
-        robot_state_dim=inferred_robot_state_dim,
+        robot_state_dim=state_dim,
     )
 
     model = instantiate(
-        config=actor_cfg,
+        config=config.agent.instantiate_config,
         representation_encoder=representation_encoder,
-        robot_state_dim=inferred_robot_state_dim,
-        action_dim=inferred_action_dim,
+        robot_state_dim=state_dim,
+        action_dim=action_dim,
     ).to(device)
 
-    # ------------------------------------------------------------------
-    # Optional checkpoint loading (BEFORE DDP wrapping)
-    # ------------------------------------------------------------------
-    resume_path = OmegaConf.select(config, "train.resume_from_checkpoint", default=None)
-    checkpoint = None
+    # -------------------------------------------------------
+    # Compute normalization (rank 0)
+    # -------------------------------------------------------
 
-    if resume_path is not None:
-        if is_main_process(rank):
-            Logger.log_info(colored(f"Loading checkpoint from {resume_path}", "cyan"))
+    if rank == 0:
+        compute_norm_stats(model, train_dataset, config)
 
-        checkpoint = torch.load(resume_path, map_location=device)
+    dist.barrier()
 
-        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            state_dict = checkpoint["model_state_dict"]
-        else:
-            state_dict = checkpoint
+    broadcast_model_buffers(model)
 
-        model.load_state_dict(state_dict, strict=True)
+    # -------------------------------------------------------
+    # Wrap DDP
+    # -------------------------------------------------------
 
-        if is_main_process(rank):
-            Logger.log_ok("Checkpoint loaded successfully.")
-
-        robot_state_dim = model.robot_state_dim
-        action_dim = model.action_dim
-    else:
-        robot_state_dim, action_dim = _compute_and_set_norm_stats(
-            model, train_dataset, config, rank, world_size
-        )
-
-    if is_main_process(rank):
-        Logger.log_info(f'Robot state dim: {colored(robot_state_dim, "red")}')
-        Logger.log_info(f'Action dim: {colored(action_dim, "red")}')
-
-    # Wrap with DDP *after* norm stats are set (they live in raw model buffers).
-    if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-
-    # Convenience accessor for model internals regardless of DDP wrapping.
-    raw_model = model.module if isinstance(model, DDP) else model
-
-    # ------------------------------------------------------------------
-    # DataLoaders  (shuffle=False when using DistributedSampler)
-    # ------------------------------------------------------------------
-    train_loader = DataLoaderConstructor(
-        train_dataset,
-        sampler=train_sampler,
-        shuffle=(train_sampler is None and config.dataloader.shuffle),
-    )
-    valid_loader = DataLoaderConstructor(
-        valid_dataset,
-        sampler=valid_sampler,
-        shuffle=False,
+    model = DDP(
+        model,
+        device_ids=[local_rank],
+        output_device=local_rank,
+        find_unused_parameters=False,
     )
 
-    # ------------------------------------------------------------------
-    # Optimizer & scheduler
-    # ------------------------------------------------------------------
-    optimizer: torch.optim.Optimizer = torch.optim.Adam(
-        params=model.parameters(),
-        lr=config.train.learning_rate,
-        weight_decay=OmegaConf.select(config, "train.weight_decay", default=1e-4),
+    raw_model = model.module
+
+    # -------------------------------------------------------
+    # Optimizer
+    # -------------------------------------------------------
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=1e-4,
     )
 
-    local_run_output_dir = pathlib.Path(
+    scaler = GradScaler(enabled=False)  # BF16 doesn't need scaling
+
+    output_dir = pathlib.Path(
         hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
     )
 
-    scheduler: torch.optim.lr_scheduler.LRScheduler = instantiate(
-        config=config.train.scheduler_instantiate_config,
-        optimizer=optimizer,
-    )
+    kl_weight = config.train.kl_weight
 
-    kl_weight = float(OmegaConf.select(config, "train.kl_weight", default=10.0))
-
-    if is_main_process(rank):
-        Logger.log_info(f"KL weight: {colored(kl_weight, 'red')}")
-
-    if resume_path is not None and isinstance(checkpoint, dict):
-        if OmegaConf.select(config, "train.resume_optimizer", default=True):
-            if "optimizer_state_dict" in checkpoint:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if "scheduler_state_dict" in checkpoint:
-                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-            if is_main_process(rank):
-                Logger.log_info("Optimizer and scheduler state restored.")
-
-    best_success = -1.0
-    best_val_loss = float("inf")
-    clip_grad_value = OmegaConf.select(config, "train.clip_grad_value", default=10.0)
-
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------
     # Training loop
-    # ------------------------------------------------------------------
-    start_epoch = 0
+    # -------------------------------------------------------
 
-    if resume_path is not None:
-        start_epoch = checkpoint.get("epoch", 0) + 1
-    for cur_epoch in range(start_epoch, config.train.num_epochs):
+    for epoch in range(config.train.num_epochs):
 
-        # Inform the sampler of the current epoch so shuffling is correct.
-        if train_sampler is not None:
-            train_sampler.set_epoch(cur_epoch)
+        train_sampler.set_epoch(epoch)
 
         model.train()
-        loss_train = AverageMeter()
-        recon_train = AverageMeter()
-        kl_train = AverageMeter()
-        weighted_kl_train = AverageMeter()
-        pad_bce_train = AverageMeter()
 
-        train_pbar = tqdm(
-            train_loader,
-            desc=f"Training Epoch {cur_epoch+1}",
-            leave=False,
-            disable=not is_main_process(rank),   # only rank-0 shows the bar
-        )
+        loss_meter = AverageMeter()
+        recon_meter = AverageMeter()
+        kl_meter = AverageMeter()
 
-        for cur_iter, batch in enumerate(train_pbar):
-            iteration_info: Dict[str, Any] = {}
+        for batch in tqdm(train_loader, disable=(rank != 0)):
 
             endoscope_image, wrist_l, wrist_r, state, action_chunk, action_is_pad, instruction_text = batch
 
-            endoscope_image  = endoscope_image.to(device, non_blocking=True)
-            wrist_l          = wrist_l.to(device, non_blocking=True)
-            wrist_r          = wrist_r.to(device, non_blocking=True)
-            state            = state.to(device, non_blocking=True)
-            action_chunk     = action_chunk.to(device, non_blocking=True)
-            action_is_pad    = action_is_pad.to(device, non_blocking=True)
+            endoscope_image = endoscope_image.to(device, non_blocking=True)
+            wrist_l = wrist_l.to(device, non_blocking=True)
+            wrist_r = wrist_r.to(device, non_blocking=True)
+            state = state.to(device, non_blocking=True)
+            action_chunk = action_chunk.to(device, non_blocking=True)
 
-            actions_norm = (action_chunk - raw_model.action_mean) / raw_model.action_std
-
-            preds = model(
-                endoscope_image,
-                wrist_l,
-                wrist_r,
-                state,
-                instruction_text,
-                action_chunk=action_chunk,
-                action_is_pad=action_is_pad,
-            )
-
-            loss_result = call(
-                config.benchmark.loss_func,
-                preds,
-                actions_norm,
-                kl_weight=kl_weight,
-                is_pad=action_is_pad,
-                include_is_pad_loss=config.benchmark.loss_func.include_is_pad_loss
-            )
-
-            if isinstance(loss_result, tuple):
-                loss, loss_dict = loss_result
-                if isinstance(loss_dict, dict) and is_main_process(rank):
-                    for k, v in loss_dict.items():
-                        iteration_info[f"train_iteration/{k}"] = _to_item(v)
-            else:
-                loss = loss_result
-                loss_dict = {}
-
-            # Average loss across all ranks before backward so gradients are
-            # consistent (DDP already all-reduces gradients, but this keeps
-            # the logged scalar accurate).
-            loss_scalar = reduce_loss(loss.detach().clone(), world_size).item()
+            actions_norm = raw_model.normalize_actions_mean_std(action_chunk)
 
             optimizer.zero_grad(set_to_none=True)
+
+            with autocast("cuda", dtype=torch.bfloat16):
+
+                preds = model(
+                    endoscope_image,
+                    wrist_l,
+                    wrist_r,
+                    state,
+                    instruction_text,
+                    actions_norm,
+                    action_is_pad
+                )
+
+                loss, loss_dict = act_vae_loss(
+                    preds,
+                    actions_norm,
+                    action_is_pad,
+                    kl_weight
+                )
+
             loss.backward()
 
-            if clip_grad_value > 0.0:
-                torch.nn.utils.clip_grad_value_(model.parameters(), clip_grad_value)
-
             optimizer.step()
-            loss_train.update(loss_scalar)
 
-            recon_value = loss_dict.get("recon", None)
-            if recon_value is not None:
-                recon_scalar = reduce_loss(recon_value.detach().clone(), world_size).item()
-                recon_train.update(recon_scalar)
+            loss_meter.update(loss_dict["loss"].item())
+            recon_meter.update(loss_dict["recon"].item())
+            kl_meter.update(loss_dict["kl"].item())
 
-            kl_value = loss_dict.get("kl", None)
-            if kl_value is not None:
-                kl_scalar = reduce_loss(kl_value.detach().clone(), world_size).item()
-                kl_train.update(kl_scalar)
-                weighted_kl_train.update(kl_weight * kl_scalar)
-
-            pad_value = loss_dict.get("pad_bce", None)
-            if pad_value is not None:
-                pad_scalar = reduce_loss(pad_value.detach().clone(), world_size).item()
-                pad_bce_train.update(pad_scalar)
-
-            if is_main_process(rank):
-                iteration_info.update(
-                    {
-                        "iteration_step": cur_epoch * len(train_loader) + cur_iter + 1,
-                        "train_iteration/epoch": cur_epoch,
-                        "train_iteration/loss": loss_scalar,
-                        "train_iteration/learning_rate": scheduler.get_last_lr()[0],
-                    }
-                )
-
-        scheduler.step()
-
-        if is_main_process(rank):
-            Logger.log_info(f"[train] epoch={cur_epoch}, loss={loss_train.avg:.6f}")
-            train_breakdown = (
-                f"[train] epoch={cur_epoch}, recon={meter_value_or_na(recon_train)}, "
-                f"kl={meter_value_or_na(kl_train)}, "
-                f"weighted_kl={meter_value_or_na(weighted_kl_train)}, "
-                f"pad_bce={meter_value_or_na(pad_bce_train)}"
+        if rank == 0:
+            Logger.log_info(
+                f"Epoch {epoch} | "
+                f"Train Loss: {loss_meter.avg:.6f} | "
+                f"Recon: {recon_meter.avg:.6f} | "
+                f"KL: {kl_meter.avg:.6f}"
             )
-            Logger.log_info(train_breakdown)
 
-        # ------------------------------------------------------------------
+        # -------------------------------------------------------
         # Validation
-        # ------------------------------------------------------------------
-        periodic_validation = (cur_epoch + 1 > config.evaluation.num_skip_epochs) and (
-            (cur_epoch + 1) % config.evaluation.validation_frequency_epochs == 0
-        )
-        last_epoch = (cur_epoch + 1) == config.train.num_epochs
+        # -------------------------------------------------------
 
-        if periodic_validation or last_epoch:
-            if valid_sampler is not None:
-                valid_sampler.set_epoch(cur_epoch)
+        do_validation = (
+            epoch >= config.evaluation.num_skip_epochs and
+            epoch % config.evaluation.validation_frequency_epochs == 0
+        )
+
+        if do_validation:
 
             model.eval()
-            loss_val = AverageMeter()
-            recon_val = AverageMeter()
-            kl_val = AverageMeter()
-            weighted_kl_val = AverageMeter()
-            pad_bce_val = AverageMeter()
 
-            valid_pbar = tqdm(
-                valid_loader,
-                desc=f"Validation Epoch {cur_epoch+1}",
-                leave=False,
-                disable=not is_main_process(rank),
-            )
+            val_meter = AverageMeter()
+            val_recon_meter = AverageMeter()
+            val_kl_meter = AverageMeter()
 
             with torch.no_grad():
-                for batch in valid_pbar:
+
+                for batch in tqdm(valid_loader, disable=(rank != 0)):
+
                     endoscope_image, wrist_l, wrist_r, state, action_chunk, action_is_pad, instruction_text = batch
 
-                    endoscope_image  = endoscope_image.to(device, non_blocking=True)
-                    wrist_l          = wrist_l.to(device, non_blocking=True)
-                    wrist_r          = wrist_r.to(device, non_blocking=True)
-                    state            = state.to(device, non_blocking=True)
-                    action_chunk     = action_chunk.to(device, non_blocking=True)
-                    action_is_pad    = action_is_pad.to(device, non_blocking=True)
+                    endoscope_image = endoscope_image.to(device, non_blocking=True)
+                    wrist_l = wrist_l.to(device, non_blocking=True)
+                    wrist_r = wrist_r.to(device, non_blocking=True)
+                    state = state.to(device, non_blocking=True)
+                    action_chunk = action_chunk.to(device, non_blocking=True)
 
-                    actions_norm = (action_chunk - raw_model.action_mean) / raw_model.action_std
+                    actions_norm = raw_model.normalize_actions_mean_std(action_chunk)
 
-                    preds = model(
-                        endoscope_image,
-                        wrist_l,
-                        wrist_r,
-                        state,
-                        instruction_text,
-                        action_chunk=action_chunk,
-                        action_is_pad=action_is_pad,
-                    )
+                    with autocast("cuda", dtype=torch.bfloat16):
 
-                    loss_result = call(
-                        config.benchmark.loss_func,
-                        preds,
-                        actions_norm,
-                        kl_weight=kl_weight,
-                        is_pad=action_is_pad,
-                        include_is_pad_loss=config.benchmark.loss_func.include_is_pad_loss
-                    )
-
-                    if isinstance(loss_result, tuple):
-                        val_loss, val_loss_dict = loss_result
-                    else:
-                        val_loss = loss_result
-                        val_loss_dict = {}
-                    val_loss_scalar = reduce_loss(val_loss.detach().clone(), world_size).item()
-                    loss_val.update(val_loss_scalar, action_chunk.shape[0])
-
-                    val_recon = val_loss_dict.get("recon", None)
-                    if val_recon is not None:
-                        val_recon_scalar = reduce_loss(val_recon.detach().clone(), world_size).item()
-                        recon_val.update(val_recon_scalar, action_chunk.shape[0])
-
-                    val_kl = val_loss_dict.get("kl", None)
-                    if val_kl is not None:
-                        val_kl_scalar = reduce_loss(val_kl.detach().clone(), world_size).item()
-                        kl_val.update(val_kl_scalar, action_chunk.shape[0])
-                        weighted_kl_val.update(kl_weight * val_kl_scalar, action_chunk.shape[0])
-
-                    val_pad = val_loss_dict.get("pad_bce", None)
-                    if val_pad is not None:
-                        val_pad_scalar = reduce_loss(val_pad.detach().clone(), world_size).item()
-                        pad_bce_val.update(val_pad_scalar, action_chunk.shape[0])
-
-            if is_main_process(rank):
-                Logger.log_info(f"[validation] epoch={cur_epoch}, val_loss={loss_val.avg:.6f}")
-                val_breakdown = (
-                    f"[validation] epoch={cur_epoch}, recon={meter_value_or_na(recon_val)}, "
-                    f"kl={meter_value_or_na(kl_val)}, "
-                    f"weighted_kl={meter_value_or_na(weighted_kl_val)}, "
-                    f"pad_bce={meter_value_or_na(pad_bce_val)}"
-                )
-                Logger.log_info(val_breakdown)
-
-                avg_success = 0.0
-                saved = False
-
-
-
-                if config.evaluation.save_best_model and loss_val.avg < best_val_loss:
-                    best_val_loss = loss_val.avg
-                    saved = True
-
-                if saved:
-                    model_path = os.path.join(local_run_output_dir, "best_model.pth")
-                    # Save raw model weights AND the optimizer and scheduler states
-                    # (not the DDP wrapper)
-                    torch.save(
-                        {
-                            "model_state_dict": raw_model.state_dict(),
-                            "optimizer_state_dict": optimizer.state_dict(),
-                            "scheduler_state_dict": scheduler.state_dict(),
-                            "epoch": cur_epoch,
-                        },
-                        model_path,
-                    )
-                    Logger.log_info(f"Save best model to {colored(model_path, 'red')}")
-
-                    with open(os.path.join(local_run_output_dir, "best_model.json"), "w") as f:
-                        json.dump(
-                            {
-                                "epoch": cur_epoch,
-                                "val_loss": loss_val.avg,
-                                "avg_success": avg_success,
-                            },
-                            f,
-                            indent=4,
+                        preds = model(
+                            endoscope_image,
+                            wrist_l,
+                            wrist_r,
+                            state,
+                            instruction_text,
+                            actions_norm,
+                            action_is_pad
                         )
 
-                torch.save(
-                    {
-                        "model_state_dict": raw_model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict(),
-                        "epoch": cur_epoch,
-                    },
-                    os.path.join(local_run_output_dir, "last_model.pth")
-                )
+                        loss, loss_dict = act_vae_loss(
+                            preds,
+                            actions_norm,
+                            action_is_pad,
+                            kl_weight
+                        )
 
-        # Barrier keeps ranks in sync at the end of every epoch.
-        if world_size > 1:
-            dist.barrier()
+                    val_meter.update(loss_dict["loss"].item())
+                    val_recon_meter.update(loss_dict["recon"].item())
+                    val_kl_meter.update(loss_dict["kl"].item())
 
-    if is_main_process(rank):
-        Logger.log_ok("Training Finished!")
+            if rank == 0:
+                if rank == 0:
+                    Logger.log_info(
+                        f"Epoch {epoch} | "
+                        f"Val Loss: {val_meter.avg:.6f} | "
+                        f"Recon: {val_recon_meter.avg:.6f} | "
+                        f"KL: {val_kl_meter.avg:.6f}"
+                    )
+
+        # -------------------------------------------------------
+        # Checkpoint
+        # -------------------------------------------------------
+
+        if rank == 0:
+
+            torch.save(
+                raw_model.state_dict(),
+                output_dir / "last_model.pth"
+            )
+
+    if rank == 0:
+        Logger.log_ok("Training finished!")
 
     cleanup_ddp()
 

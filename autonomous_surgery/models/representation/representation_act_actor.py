@@ -6,14 +6,14 @@ import torch.nn as nn
 
 @dataclass
 class ActOutput:
-    actions: torch.Tensor                   # [B, K, A] (Predicted Actions in REAL SCALE)
-    is_pad_hat: Optional[torch.Tensor ]      # [B, K] logits (optional)
-    mu: Optional[torch.Tensor ]              # posterior mu   [B, Z]
-    logvar: Optional[torch.Tensor ]          # posterior logvar [B, Z]
-    prior_mu: Optional[torch.Tensor ]        # prior mu       [B, Z]
-    prior_logvar: Optional[torch.Tensor ]    # prior logvar   [B, Z]
-    tokens: Optional[torch.Tensor ]          # [B, N, D] (memory actually fed to decoder)
-    global_feat: Optional[torch.Tensor ]     # [B, D]
+    actions_norm: torch.Tensor                   # [B, K, A] (Predicted Actions in REAL SCALE)
+    is_pad_hat: torch.Tensor      # [B, K] logits (optional)
+    mu: torch.Tensor              # posterior mu   [B, Z]
+    logvar: torch.Tensor           # posterior logvar [B, Z]
+    prior_mu: torch.Tensor         # prior mu       [B, Z]
+    prior_logvar: torch.Tensor     # prior logvar   [B, Z]
+    tokens: torch.Tensor         # [B, N, D] (memory actually fed to decoder)
+    global_feat: torch.Tensor      # [B, D]
 
 def reparametrize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
     std = torch.exp(0.5 * logvar)
@@ -53,7 +53,6 @@ class RepresentationACTActor(nn.Module):
             max_action_seq_len: int = 512,
 
             # behavior
-            return_dict: bool = True,
             sample_prior: bool = False,   # inference: sample from prior or use mean
             **kwargs,
     ):
@@ -68,7 +67,6 @@ class RepresentationACTActor(nn.Module):
         self.K = int(chunk_size)
         self.model_emb_dim = int(model_emb_dim)
         self.latent_dim = int(latent_dim)
-        self.return_dict = bool(return_dict)
         self.sample_prior = bool(sample_prior)
 
         # robot state -> d_model
@@ -122,8 +120,8 @@ class RepresentationACTActor(nn.Module):
         self.decoder = nn.TransformerDecoder(dec_layer, num_layers=num_decoder_layers)
 
         self.action_head = nn.Linear(self.model_emb_dim, self.action_dim)
-        self.is_pad_head = nn.Linear(self.model_emb_dim, 1)
-        nn.init.constant_(self.is_pad_head.bias, 0.0)
+        # self.is_pad_head = nn.Linear(self.model_emb_dim, 1)
+        # nn.init.constant_(self.is_pad_head.bias, 0.0)
 
         # ---- token hook state ----
         self._pc_tokens_hooked = False
@@ -305,7 +303,7 @@ class RepresentationACTActor(nn.Module):
                 z = prior_mu
 
         # debug
-        z = torch.zeros_like(z)
+        # z = torch.zeros_like(z)
 
         # Decoder / Policy Head
         latent_d = self.latent_out(z)       # [B,D]
@@ -318,40 +316,15 @@ class RepresentationACTActor(nn.Module):
         hs = self.decoder(tgt=tgt, memory=memory)  # [B,K,D]
 
         actions_hat_norm = self.action_head(hs)          # [B,K,A] (Normalized Space)
-        is_pad_hat = self.is_pad_head(hs).squeeze(-1)    # [B,K]
+        # is_pad_hat = self.is_pad_head(hs).squeeze(-1)    # [B,K]
 
-        # 5. Un-normalize Output
-        # Return predictions in Real Physical Scale so external Loss/Metric functions work as expected.
-        # Note: Ideally loss should be computed in Normalized space, but un-normalizing here ensures
-        # compatibility with existing code that expects raw units.
-        if action_chunk_norm is not None:
-            # 【Training mode】
-            # Directly return the normalized predictions!
-            # This way the loss is computed in normalized space, and the weights between
-            # position and rotation are automatically balanced.
-            if self.return_dict:
-                return ActOutput(
-                    actions=actions_hat_norm, # <--- Note here: the returned actions are normalized
-                    is_pad_hat=is_pad_hat,
-                    mu=mu,
-                    logvar=logvar,
-                    prior_mu=prior_mu,
-                    prior_logvar=prior_logvar,
-                    tokens=memory,
-                    global_feat=global_token,
-                )
-            return actions_hat_norm
-        else:
-
-            if self.return_dict:
-                return ActOutput(
-                    actions=actions_hat_norm,
-                    is_pad_hat=is_pad_hat,
-                    mu=mu,
-                    logvar=logvar,
-                    prior_mu=prior_mu,
-                    prior_logvar=prior_logvar,
-                    tokens=memory,
-                    global_feat=global_token,
-                )
-            return actions_hat
+        return ActOutput(
+            actions_norm=actions_hat_norm,
+            is_pad_hat=None,
+            mu=mu,
+            logvar=logvar,
+            prior_mu=prior_mu,
+            prior_logvar=prior_logvar,
+            tokens=memory,
+            global_feat=global_token,
+        )

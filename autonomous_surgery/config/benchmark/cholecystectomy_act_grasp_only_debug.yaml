@@ -1,4 +1,4 @@
-name: CholecystectomyDebug
+name: CholecystectomyACTGraspOnlyDebug
 
 dataset_instantiate_config:
   _target_: autonomous_surgery.dataset.Debug
