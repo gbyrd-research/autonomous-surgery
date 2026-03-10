@@ -309,12 +309,19 @@ def main(config):
                 kl_meter.update(loss_dict["kl"].item())
 
         if rank == 0:
-            Logger.log_info(
-                f"Epoch {epoch} | "
-                f"Train Loss: {loss_meter.avg:.6f} | "
-                f"Recon: {recon_meter.avg:.6f} | "
-                f"KL: {kl_meter.avg:.6f}"
-            )
+            if use_vae:
+                Logger.log_info(
+                    f"Epoch {epoch} | "
+                    f"Train Loss: {loss_meter.avg:.6f} | "
+                    f"Recon: {recon_meter.avg:.6f} | "
+                    f"KL: {kl_meter.avg:.6f}"
+                )
+            else:
+                Logger.log_info(
+                    f"Epoch {epoch} | "
+                    f"Train Loss: {loss_meter.avg:.6f} | "
+                    f"Recon: {recon_meter.avg:.6f} | "
+                )
 
         # -------------------------------------------------------
         # Validation
@@ -372,12 +379,18 @@ def main(config):
                         val_kl_meter.update(loss_dict["kl"].item())
 
             if rank == 0:
-                if rank == 0:
+                if use_vae:
                     Logger.log_info(
                         f"Epoch {epoch} | "
                         f"Val Loss: {val_meter.avg:.6f} | "
                         f"Recon: {val_recon_meter.avg:.6f} | "
                         f"KL: {val_kl_meter.avg:.6f}"
+                    )
+                else:
+                    Logger.log_info(
+                        f"Epoch {epoch} | "
+                        f"Val Loss: {val_meter.avg:.6f} | "
+                        f"Recon: {val_recon_meter.avg:.6f} | "
                     )
 
         # -------------------------------------------------------
