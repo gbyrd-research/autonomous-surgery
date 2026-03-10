@@ -8,10 +8,10 @@ import torch.nn as nn
 class ActOutput:
     actions_norm: torch.Tensor                   # [B, K, A] (Predicted Actions in REAL SCALE)
     is_pad_hat: torch.Tensor      # [B, K] logits (optional)
-    mu: torch.Tensor              # posterior mu   [B, Z]
-    logvar: torch.Tensor           # posterior logvar [B, Z]
-    prior_mu: torch.Tensor         # prior mu       [B, Z]
-    prior_logvar: torch.Tensor     # prior logvar   [B, Z]
+    mu: Optional[torch.Tensor]               # posterior mu   [B, Z]
+    logvar: Optional[torch.Tensor]           # posterior logvar [B, Z]
+    prior_mu: Optional[torch.Tensor]         # prior mu       [B, Z]
+    prior_logvar: Optional[torch.Tensor]     # prior logvar   [B, Z]
     tokens: torch.Tensor         # [B, N, D] (memory actually fed to decoder)
     global_feat: torch.Tensor      # [B, D]
 
@@ -48,6 +48,7 @@ class RepresentationACTActor(nn.Module):
             num_encoder_layers: int = 4,
             dim_feedforward: int = 2048,
             dropout: float = 0.1,
+            use_vae: bool = True,
 
             latent_dim: int = 64,
             max_action_seq_len: int = 512,
@@ -68,6 +69,7 @@ class RepresentationACTActor(nn.Module):
         self.model_emb_dim = int(model_emb_dim)
         self.latent_dim = int(latent_dim)
         self.sample_prior = bool(sample_prior)
+        self.use_vae = use_vae
 
         # robot state -> d_model
         # self.robot_to_d = nn.Linear(self.robot_state_dim, self.model_emb_dim)
@@ -80,30 +82,31 @@ class RepresentationACTActor(nn.Module):
         # +2 for CLS + OBS
         self.act_pos = _LearnedPositionalEncoding(max_action_seq_len + 2, self.model_emb_dim)
 
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=self.model_emb_dim,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation="relu",
-            batch_first=True,
-            norm_first=False,
-        )
-        self.posterior_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_encoder_layers)
-        self.posterior_proj = nn.Linear(self.model_emb_dim, 2 * self.latent_dim)  # -> mu/logvar
+        if self.use_vae:
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=self.model_emb_dim,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation="relu",
+                batch_first=True,
+                norm_first=False,
+            )
+            self.posterior_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_encoder_layers)
+            self.posterior_proj = nn.Linear(self.model_emb_dim, 2 * self.latent_dim)  # -> mu/logvar
 
-        # Currently, we are using the classical ACT approach, in which we sample
-        # from normal distribution instead of a learned prior. This is simpler
-        # and stabalizes training. Maybe if we change this, we will see improvement..
-        # ----- conditional prior p(z|obs): MLP(global_obs) -----
-        # self.prior_net = nn.Sequential(
-        #     nn.Linear(self.model_emb_dim, self.model_emb_dim),
-        #     nn.ReLU(inplace=True),
-        #     nn.Linear(self.model_emb_dim, 2 * self.latent_dim),
-        # )
+            # Currently, we are using the classical ACT approach, in which we sample
+            # from normal distribution instead of a learned prior. This is simpler
+            # and stabalizes training. Maybe if we change this, we will see improvement..
+            # ----- conditional prior p(z|obs): MLP(global_obs) -----
+            # self.prior_net = nn.Sequential(
+            #     nn.Linear(self.model_emb_dim, self.model_emb_dim),
+            #     nn.ReLU(inplace=True),
+            #     nn.Linear(self.model_emb_dim, 2 * self.latent_dim),
+            # )
 
-        # latent z -> model space d_model
-        self.latent_out = nn.Linear(self.latent_dim, self.model_emb_dim)
+            # latent z -> model space d_model
+            self.latent_out = nn.Linear(self.latent_dim, self.model_emb_dim)
 
         # ----- DETR-style decoder head -----
         self.query_embed = nn.Embedding(self.K, self.model_emb_dim)
@@ -282,32 +285,37 @@ class RepresentationACTActor(nn.Module):
 
         bs = global_token.shape[0]
 
-        # prior always available
-        prior_mu, prior_logvar = self._prior(global_token)
+        if self.use_vae:
+            # prior always available
+            prior_mu, prior_logvar = self._prior(global_token)
 
-        mu, logvar = None, None
-        
-        # 3. Handle Actions (Training vs Inference)
-        if action_chunk_norm is not None:
-            # Training Mode
-            if action_chunk_norm.dim() != 3 or action_chunk_norm.shape[1] != self.K:
-                raise ValueError(f"actions must be [B,K,A] with K={self.K}, got {tuple(action_chunk_norm.shape)}")
+            mu, logvar = None, None
             
-            mu, logvar = self._posterior(global_token, action_chunk_norm, action_is_pad)
-            z = reparametrize(mu, logvar)   # posterior sample
-        else:
-            # Inference Mode
-            if self.sample_prior:
-                z = reparametrize(prior_mu, prior_logvar)
+            # 3. Handle Actions (Training vs Inference)
+            if action_chunk_norm is not None:
+                # Training Mode
+                if action_chunk_norm.dim() != 3 or action_chunk_norm.shape[1] != self.K:
+                    raise ValueError(f"actions must be [B,K,A] with K={self.K}, got {tuple(action_chunk_norm.shape)}")
+                
+                mu, logvar = self._posterior(global_token, action_chunk_norm, action_is_pad)
+                z = reparametrize(mu, logvar)   # posterior sample
             else:
-                z = prior_mu
+                # Inference Mode
+                if self.sample_prior:
+                    z = reparametrize(prior_mu, prior_logvar)
+                else:
+                    z = prior_mu
 
-        # debug
-        # z = torch.zeros_like(z)
+            # debug
+            # z = torch.zeros_like(z)
 
-        # Decoder / Policy Head
-        latent_d = self.latent_out(z)       # [B,D]
-        memory = tokens + latent_d[:, None, :]  # [B,N,D]
+            # Decoder / Policy Head
+            latent_d = self.latent_out(z)       # [B,D]
+            memory = tokens + latent_d[:, None, :]  # [B,N,D]
+
+        else:
+            mu =logvar = prior_mu = prior_logvar = None
+            memory = tokens
 
         # DETR-style queries
         q = self.query_embed.weight[None, :, :].expand(bs, -1, -1)  # [B,K,D]

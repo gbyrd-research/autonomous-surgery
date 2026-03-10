@@ -20,6 +20,16 @@ from autonomous_surgery.helpers.common import Logger, set_seed
 from autonomous_surgery.helpers.pytorch import AverageMeter
 from autonomous_surgery.loss.act_vae_loss import act_vae_loss
 
+import logging
+
+logging.getLogger("datasets").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+
+import warnings
+warnings.filterwarnings("ignore")
+
 
 # -----------------------------------------------------------
 # DDP setup
@@ -168,6 +178,9 @@ def main(config):
     state_dim = sample_state.shape[-1]
     action_dim = sample_action.shape[-1]
 
+    Logger.log_info(f"State dimension: {state_dim}")
+    Logger.log_info(f"Action dimension: {action_dim}")
+
     # -------------------------------------------------------
     # Model
     # -------------------------------------------------------
@@ -205,14 +218,22 @@ def main(config):
         model,
         device_ids=[local_rank],
         output_device=local_rank,
-        find_unused_parameters=False,
+        find_unused_parameters=True,
     )
+
+    # indices = {0, 137, 138, 139}
+
+    # for i, (name, param) in enumerate(model.named_parameters()):
+    #     if i in indices:
+    #         print(i, name, param.shape) 
 
     raw_model = model.module
 
     # -------------------------------------------------------
     # Optimizer
     # -------------------------------------------------------
+
+    use_vae = config.train.use_vae
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -284,7 +305,8 @@ def main(config):
 
             loss_meter.update(loss_dict["loss"].item())
             recon_meter.update(loss_dict["recon"].item())
-            kl_meter.update(loss_dict["kl"].item())
+            if use_vae:
+                kl_meter.update(loss_dict["kl"].item())
 
         if rank == 0:
             Logger.log_info(
@@ -346,7 +368,8 @@ def main(config):
 
                     val_meter.update(loss_dict["loss"].item())
                     val_recon_meter.update(loss_dict["recon"].item())
-                    val_kl_meter.update(loss_dict["kl"].item())
+                    if use_vae:
+                        val_kl_meter.update(loss_dict["kl"].item())
 
             if rank == 0:
                 if rank == 0:

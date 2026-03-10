@@ -71,16 +71,29 @@ def act_vae_loss(
         raise ValueError("reduction must be 'mean' or 'sum'")
 
     # KL (classic ACT): ALWAYS KL(q || N(0, I)) using posterior only
-    with torch.autocast("cuda", enabled=False):
-        kl = kl_q_to_std_normal(preds.mu.float(), preds.logvar.float())
+    if (preds.mu is not None 
+        and preds.logvar is not None 
+        and preds.prior_mu is not None 
+        and preds.prior_logvar is not None
+    ):
+        with torch.autocast("cuda", enabled=False):
+            kl = kl_q_to_std_normal(preds.mu.float(), preds.logvar.float())
 
-    loss = recon + float(kl_weight) * kl
+        loss = recon + float(kl_weight) * kl
+        
+        loss_dict: Dict[str, Tensor] = {
+            "loss": loss.detach(),
+            "recon": recon.detach(),
+            "kl": kl.detach(),
+        }
 
-    loss_dict: Dict[str, Tensor] = {
-        "loss": loss.detach(),
-        "recon": recon.detach(),
-        "kl": kl.detach(),
-    }
+    else:
+        loss = recon
+
+        loss_dict: Dict[str, Tensor] = {
+            "loss": loss.detach(),
+            "recon": recon.detach(),
+        }
 
     return loss, loss_dict
 

@@ -2,6 +2,8 @@ name: RepresentationACTActor
 instantiate_config:
   _target_: autonomous_surgery.models.representation.representation_act_actor.RepresentationACTActor
 
+  use_vae: ${train.use_vae}
+
   action_dim: 16
   robot_state_dim: 16
   chunk_size: 50

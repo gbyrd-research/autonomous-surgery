@@ -5,3 +5,6 @@ dataset_instantiate_config:
   repo_id: surpass/cholecystectomy_accelerated
   root: /home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_accelerated
   tolerance_s: 1e-4
+  isolate_psm: -1                 # -1 to return both psms [16 DOF action]
+                                # 1 to return PSM1 [8 DOF action]
+                                # 2 to return PSM2 [8 DOF action]
