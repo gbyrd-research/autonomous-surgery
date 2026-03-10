@@ -225,13 +225,17 @@ def main(config):
         hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
     )
 
-    kl_weight = config.train.kl_weight
-
     # -------------------------------------------------------
     # Training loop
     # -------------------------------------------------------
 
     for epoch in range(config.train.num_epochs):
+        
+        # add kl warmup
+        kl_weight = min(
+            config.train.kl_weight,
+            config.train.kl_weight * epoch / config.train.kl_warmup_epochs
+        )
 
         train_sampler.set_epoch(epoch)
 

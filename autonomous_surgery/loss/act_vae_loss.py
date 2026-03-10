@@ -33,9 +33,17 @@ def kl_q_to_std_normal(mu: Tensor, logvar: Tensor) -> Tensor:
     KL( N(mu, diag(exp(logvar))) || N(0, I) )
     Returns scalar averaged over batch.
     """
-    # klds: [B,Z]
-    klds = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())
-    return klds.sum(dim=1).mean()
+    # this will prevent KL collapse, although it's unclear how this will affect
+    # training
+    free_bits = 0.1
+    klds = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
+    # klds = torch.clamp(klds, min=free_bits)
+    kl = klds.sum(dim=1).mean()
+    return kl
+
+    # # klds: [B,Z]
+    # klds = -0.5 * (1.0 + logvar - mu.pow(2) - logvar.exp())
+    # return klds.sum(dim=1).mean()
 
 
 def act_vae_loss(
@@ -63,7 +71,8 @@ def act_vae_loss(
         raise ValueError("reduction must be 'mean' or 'sum'")
 
     # KL (classic ACT): ALWAYS KL(q || N(0, I)) using posterior only
-    kl = kl_q_to_std_normal(preds.mu, preds.logvar)
+    with torch.autocast("cuda", enabled=False):
+        kl = kl_q_to_std_normal(preds.mu.float(), preds.logvar.float())
 
     loss = recon + float(kl_weight) * kl
 

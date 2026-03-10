@@ -21,6 +21,7 @@ train:
   save_every_epochs: 10
   num_epochs: 100
   kl_weight: 10.0
+  kl_warmup_epochs: 30
   weight_decay: 1e-4
   scheduler_instantiate_config:
     _target_: autonomous_surgery.helpers.pytorch.Optimizers.get_constant_scheduler
