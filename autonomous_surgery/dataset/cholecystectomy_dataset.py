@@ -116,13 +116,17 @@ class CholecystectomyACTDataset(Dataset):
         root: str | Path,
         tolerance_s: float,
         split: str,
-        chunk_size: int = 16
+        chunk_size: int = 16,
+        isolate_psm: int = -1,  # -1 to return both psms [16 DOF action]
+                                # 1 to return PSM1 [8 DOF action]
+                                # 2 to return PSM2 [8 DOF action]
     ):
         super().__init__()
-        valid_splits = {"train", "test"}
+        valid_splits = {"train", "val", "test"}
         assert split in valid_splits, f"Invalid split name, {split}. Must be one of {valid_splits}."
 
         self.split = split
+        self.isolate_psm = isolate_psm
 
         dataset_metadata = LeRobotDatasetMetadata(
             repo_id=repo_id, root=root
@@ -169,6 +173,15 @@ class CholecystectomyACTDataset(Dataset):
         action_chunk = sample["action_hybrid_relative"]
         action_is_pad = sample["action_hybrid_relative_is_pad"]
         instruction_text = sample["instruction.text"]
+
+        if self.isolate_psm == 1:
+            state = state[:8]
+            action_chunk = action_chunk[:, :8]
+            action_is_pad = action_is_pad
+        elif self.isolate_psm == 2:
+            state = state[8:]
+            action_chunk = action_chunk[:, 8:]
+            action_is_pad = action_is_pad
 
         return (
             endoscope_image,
@@ -343,14 +356,46 @@ class Debug(CholecystectomyACTDataset_GraspOnly_PSM1_Only):
         )  
 
 if __name__=="__main__":
-    act_dataset = CholecystectomyACTDataset(
-        repo_id="surpass/cholecystectomy_accelerated", 
-        root="/home/byrdgb1/surpass/.hf/lerobot/surpass/cholecystectomy_accelerated",
+    train_dataset = CholecystectomyACTDataset(
+        repo_id="surpass/grasp_only", 
+        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/grasp_only",
         tolerance_s=1e-4,
-        split="test"
+        split="train",
+        chunk_size=50
     )
 
-    act_dataset[0]
+    val_dataset = CholecystectomyACTDataset(
+        repo_id="surpass/grasp_only", 
+        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/grasp_only",
+        tolerance_s=1e-4,
+        split="val",
+        chunk_size=50
+    )
+
+    test_dataset = CholecystectomyACTDataset(
+        repo_id="surpass/grasp_only", 
+        root="/home/gbyrd/SURPASS/.hf/lerobot/surpass/grasp_only",
+        tolerance_s=1e-4,
+        split="test",
+        chunk_size=50
+    )
+
+
+    print(len(train_dataset))
+    print(len(val_dataset))
+    print(len(test_dataset))
+
+    for i in tqdm(train_dataset):
+        # print(int(i[-2].sum()))
+        pass
+
+    for i in tqdm(val_dataset):
+        # print(int(i[-2].sum()))
+        pass
+
+    for i in tqdm(test_dataset):
+        # print(int(i[-2].sum()))
+        pass
 
     print("Done")
 
