@@ -21,11 +21,10 @@ We use DinoV3 in this repository. You will need to request access to this via Hu
 ## Installation Choices
 
 
-There are a few different ways to install depending on where you will be using the repository. The basic process is to set up a conda environment in which you can install dependencies. Below are the 3 different ways to set up environments depending on where you will use the repo:
+There are two supported ways to install depending on where you will use the repository:
 
-1. **Using and HPC Cluster with Singularity** - If your cluster does not allow docker containers or conda environments.
-2. **Using a docker container** - If you have access to Docker (Strongly Recommended).
-3. **Using a basic conda environment** - This is possible, but brittle on many systems (Using Docker is better).
+1. **Using an HPC Cluster with Singularity** - Recommended for shared HPC environments.
+2. **Using a basic conda environment** - Works on local systems.
 
 ## HPC Cluster with Singularity (DSAI Cluster)
 
@@ -77,47 +76,9 @@ apptainer shell --nv --writable \
 
 </details>
 
-## Docker Container
-
-<details>
-<summary>1. Build the docker image.</summary>
-
-In the base directory of the repo, run:
-
-```bash
-docker build -t autonomous_surgery:latest .
-```
-</details>
-
-<details>
-<summary>2. Set up docker-compose.yaml file</summary>
-
-There are various environment variables that need to be set uniquely for each user in the `docker-compose.yaml` file. Set these.
-
-</details>
-
-<details>
-<summary>3. Start the Docker container.</summary>
-
-You can run the container in headless mode and then connect via VS Code: `Dev Containers: Attach to Running Container`:
-
-```bash
-chmod +x run_container.sh
-./run_container.sh
-```
-
-Alternatively, you can immediately enter the container in an interactive terminal with:
-
-```bash
-chmod +x run_container.sh
-./run_container.sh -i
-```
-
-</details>
-
 ## Conda Environment
 
-If you want to just create a conda environment without containerization, continue to the next section on installing dependencies. Do this at your own risk, as a Docker container is generally going to be more robust.
+If you want to create a local conda environment without containerization, continue to the next section on installing dependencies.
 
 #
 
@@ -161,3 +122,42 @@ python -m autonomous_surgery.tools.train_representation_policy
 The configs for training can be found in `autonomous_surgery/config`.
 
 
+<div align="center">
+
+# Running Inference
+
+<div align="left">
+
+### ROS Inference on the dVRK
+
+To run ROS1 inference through Docker, build the Docker image:
+
+```bash
+docker compose build autonomous_surgery
+```
+
+Run and enter the container and build the ros1 workspace:
+
+```bash
+docker compose up
+```
+
+In another terminal:
+
+```bash
+docker exec -it autonomous_surgery:latest /bin/bash
+```
+
+Inside the docker container:
+
+```bash
+cd ros1_ws
+catkin_make
+```
+
+Launch the inference bridge:
+
+```bash
+source /ros1_ws/devel/setup.bash
+roslaunch representation_policy_ros representation_policy_inference.launch
+```

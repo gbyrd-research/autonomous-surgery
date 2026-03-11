@@ -110,6 +110,52 @@ def broadcast_model_buffers(model):
         dist.broadcast(buffer, src=0)
 
 
+def load_checkpoint_if_configured(model, optimizer, config, device, rank):
+
+    checkpoint_path = config.train.resume_from_checkpoint
+    if not checkpoint_path:
+        return False, 0
+
+    checkpoint_path = pathlib.Path(checkpoint_path).expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = pathlib.Path(hydra.utils.get_original_cwd()) / checkpoint_path
+
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        start_epoch = int(checkpoint.get("epoch", -1)) + 1
+
+        if config.train.resume_optimizer and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        elif config.train.resume_optimizer and rank == 0:
+            Logger.log_warning(
+                f"Checkpoint {checkpoint_path} does not contain optimizer state; "
+                "continuing without it"
+            )
+    else:
+        model.load_state_dict(checkpoint)
+        start_epoch = 0
+
+        if config.train.resume_optimizer and rank == 0:
+            Logger.log_warning(
+                f"Checkpoint {checkpoint_path} only contains model weights; "
+                "continuing without optimizer state"
+            )
+
+    if rank == 0:
+        Logger.log_info(
+            f"Loaded checkpoint from {checkpoint_path} "
+            f"and resuming at epoch {start_epoch}"
+        )
+
+    return True, start_epoch
+
+
 # -----------------------------------------------------------
 # Training
 # -----------------------------------------------------------
@@ -200,10 +246,31 @@ def main(config):
     ).to(device)
 
     # -------------------------------------------------------
-    # Compute normalization (rank 0)
+    # Optimizer
     # -------------------------------------------------------
 
-    if rank == 0:
+    use_vae = config.train.use_vae
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=1e-4,
+    )
+
+    scaler = GradScaler(enabled=False)  # BF16 doesn't need scaling
+
+    # -------------------------------------------------------
+    # Restore checkpoint or compute normalization
+    # -------------------------------------------------------
+
+    resumed_from_checkpoint, start_epoch = load_checkpoint_if_configured(
+        model=model,
+        optimizer=optimizer,
+        config=config,
+        device=device,
+        rank=rank,
+    )
+
+    if not resumed_from_checkpoint and rank == 0:
         compute_norm_stats(model, train_dataset, config)
 
     dist.barrier()
@@ -221,26 +288,7 @@ def main(config):
         find_unused_parameters=True,
     )
 
-    # indices = {0, 137, 138, 139}
-
-    # for i, (name, param) in enumerate(model.named_parameters()):
-    #     if i in indices:
-    #         print(i, name, param.shape) 
-
     raw_model = model.module
-
-    # -------------------------------------------------------
-    # Optimizer
-    # -------------------------------------------------------
-
-    use_vae = config.train.use_vae
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=1e-4,
-    )
-
-    scaler = GradScaler(enabled=False)  # BF16 doesn't need scaling
 
     output_dir = pathlib.Path(
         hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
@@ -250,7 +298,7 @@ def main(config):
     # Training loop
     # -------------------------------------------------------
 
-    for epoch in range(config.train.num_epochs):
+    for epoch in range(start_epoch, config.train.num_epochs):
         
         # add kl warmup
         kl_weight = min(
@@ -398,6 +446,15 @@ def main(config):
         # -------------------------------------------------------
 
         if rank == 0:
+
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": raw_model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                },
+                output_dir / "last_checkpoint.pth"
+            )
 
             torch.save(
                 raw_model.state_dict(),

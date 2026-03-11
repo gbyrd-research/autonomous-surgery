@@ -58,20 +58,49 @@ RUN conda create -n ml python=3.10 -y && \
     conda clean -afy
 
 # ------------------------------------------------------------
+# Install autonomous_surgery dependencies into system Python
+# (ROS Noetic Python runtime)
+# ------------------------------------------------------------
+WORKDIR /tmp/autonomous_surgery_build
+
+COPY requirements.txt pyproject.toml README.md ./
+COPY autonomous_surgery ./autonomous_surgery
+
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install --no-cache-dir -r requirements.txt && \
+    python3 -m pip install --no-cache-dir -e .
+
+# ------------------------------------------------------------
 # Setup ROS environment
 # ------------------------------------------------------------
 SHELL ["/bin/bash", "-c"]
 
-RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc
+RUN echo "source /opt/ros/noetic/setup.bash" >> /root/.bashrc && \
+    echo "if [ -f /ros1_ws/devel/setup.bash ]; then source /ros1_ws/devel/setup.bash; fi" >> /root/.bashrc
 
 # ------------------------------------------------------------
 # Create Catkin Workspace
 # ------------------------------------------------------------
-RUN mkdir -p /catkin_ws/src
-WORKDIR /catkin_ws
+RUN mkdir -p /ros1_ws/src
+WORKDIR /ros1_ws
 
 RUN source /opt/ros/noetic/setup.bash && \
     catkin init
+
+ENV CMAKE_POLICY_VERSION_MINIMUM=3.5
+
+RUN /opt/conda/bin/python3 -m pip install \
+catkin_pkg \
+rospkg \
+empy \
+PyYAML \
+setuptools \
+numpy==1.26.4 \
+opencv-python
+
+RUN conda install -y libstdcxx-ng
+
+ENV LD_LIBRARY_PATH=/opt/conda/lib:$LD_LIBRARY_PATH
 
 # ------------------------------------------------------------
 # Default entry

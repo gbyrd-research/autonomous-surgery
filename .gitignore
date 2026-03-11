@@ -1,10 +1,27 @@
-data
-outputs
-*.egg*
-*.pyc*
-.vscode
-autonomous_surgery/models/autonomous_surgery/ckpt/
-.vscode
+# Python cache and build artifacts
+__pycache__/
 *__pycache__*
-.hf
+*.pyc
+*.pyc*
+*.egg*
+
+# Editor settings
+.vscode/
+
+# Data and experiment outputs
+data/
+outputs/
+checkpoints/
+.hf/
+autonomous_surgery/models/autonomous_surgery/ckpt/
+
+# ROS / Catkin build outputs
+build/
+devel/
+.catkin_workspace
+ros1_ws/build/
+ros1_ws/devel/
+ros1_ws/.catkin_workspace
+
+# Local machine-specific compose overrides
 docker-compose.yaml

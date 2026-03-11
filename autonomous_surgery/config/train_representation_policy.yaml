@@ -3,8 +3,6 @@ defaults:
   - agent: representation_act
   - benchmark: cholecystectomy_act
 
-use_depth: False
-
 # Experiment settings
 seed: 42
 

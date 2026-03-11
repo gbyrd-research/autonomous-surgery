@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>representation_policy_ros</name>
+  <version>0.1.0</version>
+  <description>ROS1 bridge node for representation policy inference.</description>
+
+  <maintainer email="gbyrd3@jh.edu">SURPASS</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>geometry_msgs</depend>
+</package>

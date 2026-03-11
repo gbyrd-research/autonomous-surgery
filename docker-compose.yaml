@@ -1,11 +1,15 @@
 services:
   autonomous_surgery:
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     image: autonomous_surgery:latest
     container_name: autonomous_surgery_dev
 
     network_mode: host
     ipc: host
+    gpus: all
 
     deploy:
       resources:
@@ -20,6 +24,9 @@ services:
       - ROS_MASTER_URI=http://10.162.34.59:11311   # <-- CHANGE THIS
       - ROS_IP=10.162.34.58                        # <-- CHANGE THIS
       # ------------------------------------------------
+      - AUTONOMOUS_SURGERY_ROOT=/workspace
+      - ROS_WS=/ros1_ws
+      - PYTHONPATH=/workspace
 
       - SSH_AUTH_SOCK=/ssh-agent
       - NVIDIA_VISIBLE_DEVICES=all
@@ -29,9 +36,11 @@ services:
 
     volumes:
       - ./:/workspace
+      - ./ros1_ws:/ros1_ws
       - conda_envs:/opt/conda/envs
       - ${SSH_AUTH_SOCK}:/ssh-agent
-      - ./.hf:/.hf
+      - ./.hf:/workspace/.hf
+      - ./checkpoints:/checkpoints
 
     working_dir: /workspace
     stdin_open: true

@@ -1,0 +1,52 @@
+<launch>
+  <arg name="config_path" default="/checkpoints/grasp_only_demo/.hydra/config.yaml" />
+  <arg name="checkpoint_path" default="/checkpoints/grasp_only_demo/last_model.pth" />
+  <arg name="robot_state_dim" default="8" />
+  <arg name="only_psm1" default="false" />
+  <arg name="only_psm2" default="true" />
+  <arg name="action_dim" default="$(arg robot_state_dim)" />
+  <arg name="device" default="cuda" />
+  <arg name="inference_rate_hz" default="5.0" />
+  <arg name="default_text" default="perform the next surgical action" />
+
+  <arg name="endoscope_topic" default="/PSM2/endoscope_img" />
+  <arg name="wrist_left_topic" default="/jhu_daVinci/left/image_raw" />
+  <arg name="wrist_right_topic" default="/jhu_daVinci/right/image_raw" />
+  <arg name="robot_psm1_state_topic" default="/PSM1/measured_cp" />
+  <arg name="robot_psm2_state_topic" default="/PSM2/measured_cp" />
+  <arg name="robot_psm1_jaw_topic" default="/PSM1/jaw/measured_js" />
+  <arg name="robot_psm2_jaw_topic" default="/PSM2/jaw/measured_js" />
+  <arg name="psm1_setpoint_topic" default="/PSM1/setpoint_cp_test" />
+  <arg name="psm2_setpoint_topic" default="/PSM2/setpoint_cp_test" />
+  <arg name="psm1_jaw_setpoint_topic" default="/PSM1/jaw/setpoint_cp_test" />
+  <arg name="psm2_jaw_setpoint_topic" default="/PSM2/jaw/setpoint_cp_test" />
+
+  <node
+    pkg="representation_policy_ros"
+    type="representation_policy_node.py"
+    name="representation_policy_node"
+    output="screen"
+    required="true"
+  >
+    <param name="config_path" value="$(arg config_path)" />
+    <param name="checkpoint_path" value="$(arg checkpoint_path)" />
+    <param name="robot_state_dim" value="$(arg robot_state_dim)" />
+    <param name="only_psm1" value="$(arg only_psm1)" />
+    <param name="only_psm2" value="$(arg only_psm2)" />
+    <param name="action_dim" value="$(arg action_dim)" />
+    <param name="device" value="$(arg device)" />
+    <param name="inference_rate_hz" value="$(arg inference_rate_hz)" />
+
+    <param name="endoscope_topic" value="$(arg endoscope_topic)" />
+    <param name="wrist_left_topic" value="$(arg wrist_left_topic)" />
+    <param name="wrist_right_topic" value="$(arg wrist_right_topic)" />
+    <param name="robot_psm1_state_topic" value="$(arg robot_psm1_state_topic)" />
+    <param name="robot_psm2_state_topic" value="$(arg robot_psm2_state_topic)" />
+    <param name="robot_psm1_jaw_topic" value="$(arg robot_psm1_jaw_topic)" />
+    <param name="robot_psm2_jaw_topic" value="$(arg robot_psm2_jaw_topic)" />
+    <param name="psm1_setpoint_topic" value="$(arg psm1_setpoint_topic)" />
+    <param name="psm2_setpoint_topic" value="$(arg psm2_setpoint_topic)" />
+    <param name="psm1_jaw_setpoint_topic" value="$(arg psm1_jaw_setpoint_topic)" />
+    <param name="psm2_jaw_setpoint_topic" value="$(arg psm2_jaw_setpoint_topic)" />
+  </node>
+</launch>
