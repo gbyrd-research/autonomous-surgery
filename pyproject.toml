@@ -15,3 +15,7 @@ dependencies = [
     "einops",
     "numpy",
 ]
+
+[tool.setuptools.packages.find]
+include = ["autonomous_surgery*"]
+exclude = ["outputs*", "ros1_ws*"]
