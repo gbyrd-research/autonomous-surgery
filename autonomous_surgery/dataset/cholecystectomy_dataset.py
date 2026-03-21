@@ -291,8 +291,8 @@ class CholecystectomyACTDataset_GraspOnly_PSM1_Only(CholecystectomyACTDataset):
             endoscope_image,
             wrist_l,
             wrist_r,
-            state[:8],           # only provide state for the PSM1
-            action_chunk[:, :8],    # only provide action chunk for the PSM1
+            state[8:],           # only provide state for the PSM2
+            action_chunk[:, 8:],    # only provide action chunk for the PSM2
             action_is_pad,
             instruction_text,
         )

@@ -16,10 +16,10 @@
   <arg name="robot_psm2_state_topic" default="/PSM2/measured_cp" />
   <arg name="robot_psm1_jaw_topic" default="/PSM1/jaw/measured_js" />
   <arg name="robot_psm2_jaw_topic" default="/PSM2/jaw/measured_js" />
-  <arg name="psm1_setpoint_topic" default="/PSM1/setpoint_cp_test" />
-  <arg name="psm2_setpoint_topic" default="/PSM2/setpoint_cp_test" />
-  <arg name="psm1_jaw_setpoint_topic" default="/PSM1/jaw/setpoint_cp_test" />
-  <arg name="psm2_jaw_setpoint_topic" default="/PSM2/jaw/setpoint_cp_test" />
+  <arg name="psm1_setpoint_topic" default="/PSM1/servo_cp" />
+  <arg name="psm2_setpoint_topic" default="/PSM2/servo_cp" />
+  <arg name="psm1_jaw_setpoint_topic" default="/PSM1/jaw/setpoint_js" />
+  <arg name="psm2_jaw_setpoint_topic" default="/PSM2/jaw/setpoint_js" />
 
   <node
     pkg="representation_policy_ros"

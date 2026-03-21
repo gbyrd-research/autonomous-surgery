@@ -19,6 +19,7 @@ from tqdm import tqdm
 from autonomous_surgery.helpers.common import Logger, set_seed
 from autonomous_surgery.helpers.pytorch import AverageMeter
 from autonomous_surgery.loss.act_vae_loss import act_vae_loss
+from autonomous_surgery.tools.trajectory_visualization import TrajectoryVisualizer
 
 import logging
 
@@ -425,6 +426,29 @@ def main(config):
                     val_recon_meter.update(loss_dict["recon"].item())
                     if use_vae:
                         val_kl_meter.update(loss_dict["kl"].item())
+
+                # --- Visual Debugging Hook ---
+                # Save plots for the very first sample of the validation set to track progress
+                if rank == 0:
+                    # Capture the first batch items for plotting
+                    # Note: We take the first sample [0] from the current batch
+                    # This happens on the last batch of validation, or we could move it outside the loop
+                    # for the very first batch.
+                    
+                    # For simplicity, let's just use the last batch processed in the loop
+                    gt_chunk = raw_model.unnormalize_actions_mean_std(actions_norm[0])
+                    pr_chunk = raw_model.unnormalize_actions_mean_std(preds.actions_norm[0])
+                    
+                    vis_dir = output_dir / "plots" / f"epoch_{epoch}"
+                    vis_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    visualizer = TrajectoryVisualizer(
+                        gt_trajectory=gt_chunk, 
+                        pred_trajectory=pr_chunk,
+                        dt=1.0/30.0 # Assuming 30fps, or read from config if available
+                    )
+                    visualizer.generate_all_plots(str(vis_dir))
+                    Logger.log_info(f"Validation plots saved to {vis_dir}")
 
             if rank == 0:
                 if use_vae:

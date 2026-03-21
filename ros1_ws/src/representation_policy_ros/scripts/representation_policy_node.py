@@ -206,15 +206,31 @@ class RepresentationPolicyNode:
             text = self.default_text
 
         try:
-            if endoscope_msg is None or wrist_left_msg is None or wrist_right_msg is None:
+            missing_messages = []
+
+            if endoscope_msg is None:
+                missing_messages.append("endoscope_msg")
+            if wrist_left_msg is None:
+                missing_messages.append("wrist_left_msg")
+            if wrist_right_msg is None:
+                missing_messages.append("wrist_right_msg")
+
+            if not self.only_psm2:
+                if robot_psm1_state_msg is None:
+                    missing_messages.append("robot_psm1_state_msg")
+                if robot_psm1_jaw_msg is None:
+                    missing_messages.append("robot_psm1_jaw_msg")
+
+            if not self.only_psm1:
+                if robot_psm2_state_msg is None:
+                    missing_messages.append("robot_psm2_state_msg")
+                if robot_psm2_jaw_msg is None:
+                    missing_messages.append("robot_psm2_jaw_msg")
+
+            if missing_messages:
+                rospy.loginfo("Skipping inference; missing messages: %s", ", ".join(missing_messages))
                 return
 
-            if (not self.only_psm2) and (robot_psm1_state_msg is None or robot_psm1_jaw_msg is None):
-                return
-
-            if (not self.only_psm1) and (robot_psm2_state_msg is None or robot_psm2_jaw_msg is None):
-                return
-        
 
             robot_state_tensor = self._robot_states_to_tensor(
                 robot_psm1_state_msg,
