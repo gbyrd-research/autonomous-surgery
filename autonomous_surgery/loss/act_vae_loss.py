@@ -37,7 +37,7 @@ def kl_q_to_std_normal(mu: Tensor, logvar: Tensor) -> Tensor:
     # training
     free_bits = 0.1
     klds = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
-    # klds = torch.clamp(klds, min=free_bits)
+    klds = torch.clamp(klds, min=free_bits) # Mitigate posterior collapse
     kl = klds.sum(dim=1).mean()
     return kl
 
