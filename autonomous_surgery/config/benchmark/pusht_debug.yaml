@@ -1,0 +1,7 @@
+name: Pusht_Debug
+
+dataset_instantiate_config:
+  _target_: autonomous_surgery.dataset.PushTDataset
+  repo_id: lerobot/pusht
+  root: /home/gbyrd/SURPASS/.hf/lerobot/pusht
+  tolerance_s: 1e-4
