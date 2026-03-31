@@ -1,0 +1,7 @@
+name: pusht
+repo_id: lerobot/pusht
+root: null
+dataset_action_key: action
+delta_timestamp_action_keys:
+  - action
+input_feature_keys: null

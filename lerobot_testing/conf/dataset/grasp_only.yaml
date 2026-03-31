@@ -1,0 +1,12 @@
+name: grasp_only
+repo_id: surpass/grasp_only
+root: /home/grayson/surpass/autonomous-surgery/.hf_home/lerobot/surpass/grasp_only
+dataset_action_key: action_hybrid_relative
+delta_timestamp_action_keys:
+  - action
+  - action_hybrid_relative
+input_feature_keys:
+  - observation.images.endoscope.left
+  - observation.images.wrist.left
+  - observation.images.wrist.right
+  - observation.state

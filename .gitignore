@@ -9,6 +9,8 @@ __pycache__/
 .vscode/
 
 # Data and experiment outputs
+.hf_home
+wandb
 data/
 outputs/
 checkpoints/

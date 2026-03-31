@@ -1,0 +1,33 @@
+defaults:
+  - _self_
+  - dataset: pusht
+  - act: default
+
+device: cuda
+
+dataloader:
+  batch_size: 64
+  num_workers: 4
+  shuffle: true
+  drop_last: true
+  pin_memory: true
+
+training:
+  epochs: 100
+  learning_rate: 1.0e-4
+  resume_from_checkpoint: null
+  freeze_backbone: True
+
+hydra:
+  job:
+    chdir: true
+  run:
+    dir: ${hydra:runtime.cwd}/lerobot_testing/outputs/hydra/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${hydra:runtime.cwd}/lerobot_testing/outputs/multirun/${dataset.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}_${hydra.job.override_dirname}
+
+wandb:
+  project: surpass_lerobot_testing
+  entitiy: gbyrd3-johns-hopkins-university
+  name: default

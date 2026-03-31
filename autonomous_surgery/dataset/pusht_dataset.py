@@ -20,22 +20,25 @@ def parse_split_range(s: str) -> list[int]:
 
 class PushTDataset(Dataset):
     """
-    Sequence-style dataset wrapper for LeRobot PushT, formatted to match
-    multi-camera ACT-style datasets.
+    Sequence-style dataset wrapper for LeRobot PushT.
 
-    Each sample corresponds to a single starting timestep and returns a
-    fixed-length future window.
+    Each sample corresponds to one timestep and returns:
+      - a history of images ending at the current timestep
+      - a future chunk of states/actions starting at the current timestep
 
     Returns:
         (
-            image,                  # [C, H, W] current top-down image
-            dummy_wrist_l,          # [3, 480, 640] placeholder (no wrist cam in PushT)
-            dummy_wrist_r,          # [3, 480, 640] placeholder (no wrist cam in PushT)
-            initial_state,          # [state_dim] current state at the first timestep
-            relative_action_chunk,  # [T, action_dim] actions relative to state at each timestep
-            action_is_pad,          # [T] boolean mask
-            instruction_text        # str placeholder
+            images,             # dict: {"3rd_person": [H, C, H_img, W_img]}
+            initial_state,      # [state_dim]
+            action_chunk,       # [T, action_dim]
+            action_is_pad,      # [T] bool
+            instruction_text,   # str
         )
+
+    Notes:
+      - H = image_history
+      - T = chunk_size
+      - image history is ordered oldest -> newest
     """
 
     def __init__(
@@ -45,8 +48,12 @@ class PushTDataset(Dataset):
         tolerance_s: float = 1e-4,
         split: str = "train",
         chunk_size: int = 16,
+        image_history: int = 4,
     ):
         super().__init__()
+
+        if image_history < 1:
+            raise ValueError(f"image_history must be >= 1, got {image_history}")
 
         dataset_metadata = LeRobotDatasetMetadata(
             repo_id=repo_id,
@@ -61,7 +68,13 @@ class PushTDataset(Dataset):
 
         episodes = parse_split_range(info["splits"][split])
         fps = dataset_metadata.fps
-        timestamps = [i / fps for i in range(chunk_size)]
+
+        # Future window for actions/states starting at current timestep.
+        future_timestamps = [i / fps for i in range(chunk_size)]
+
+        # Past image history ending at current timestep.
+        # Example for image_history=4: [-3/fps, -2/fps, -1/fps, 0]
+        image_timestamps = [-(image_history - 1 - i) / fps for i in range(image_history)]
 
         # Load the FULL dataset to avoid LeRobot's episode-index bug on nonzero episode subsets
         self.dataset = LeRobotDataset(
@@ -69,13 +82,17 @@ class PushTDataset(Dataset):
             root=root,
             tolerance_s=tolerance_s,
             delta_timestamps={
-                "action": timestamps,
-                "observation.state": timestamps,
+                "observation.image": image_timestamps,
+                "observation.state": future_timestamps,
+                "action": future_timestamps,
             },
         )
 
         self.split = split
         self.episodes = episodes
+        self.chunk_size = chunk_size
+        self.image_history = image_history
+        self.fps = fps
 
         # Build frame bounds for this split using global episode indices
         episode_from = self.dataset.episode_data_index["from"]
@@ -91,9 +108,15 @@ class PushTDataset(Dataset):
         global_idx = idx + self.start_idx
         sample = self.dataset[global_idx]
 
-        image = sample["observation.image"]
-        state_chunk = sample["observation.state"]   # [T, state_dim]
-        action_chunk = sample["action"]             # [T, action_dim]
+        # [image_history, C, H, W]
+        image_history = sample["observation.image"]
+
+        # [T, state_dim]
+        state_chunk = sample["observation.state"]
+
+        # [T, action_dim]
+        action_chunk = sample["action"]
+
         action_is_pad = sample.get(
             "action_is_pad",
             torch.zeros(action_chunk.shape[0], dtype=torch.bool),
@@ -101,16 +124,16 @@ class PushTDataset(Dataset):
 
         relative_action_chunk = action_chunk - state_chunk
         initial_state = state_chunk[0]
-
-        dummy_wrist_r = torch.zeros((3, 480, 640))
-        dummy_wrist_l = torch.zeros((3, 480, 640))
-
         instruction_text = "placeholder"
 
+        images = {
+            "3rd_person": image_history[-1]
+        }
+        for idx in range(image_history.shape[0]-1):
+            images[f"3rd_person_{idx}"] = image_history[idx]
+
         return (
-            image,
-            dummy_wrist_l,
-            dummy_wrist_r,
+            images,
             initial_state,
             relative_action_chunk,
             action_is_pad,
@@ -119,13 +142,16 @@ class PushTDataset(Dataset):
 
 
 if __name__ == "__main__":
-    pusht_ds = PushTDataset(split="test")
+    pusht_ds = PushTDataset(split="test", chunk_size=16, image_history=4)
     print("PushT length:", len(pusht_ds))
 
     sample = pusht_ds[0]
-    print("image shape:", sample[0].shape if hasattr(sample[0], "shape") else type(sample[0]))
-    print("left wrist shape:", sample[1].shape if hasattr(sample[1], "shape") else type(sample[1]))
-    print("right wrist shape:", sample[2].shape if hasattr(sample[2], "shape") else type(sample[2]))
-    print("state shape:", sample[3].shape if hasattr(sample[3], "shape") else type(sample[3]))
-    print("relative action shape:", sample[4].shape if hasattr(sample[4], "shape") else type(sample[4]))
-    print("action_is_pad shape:", sample[5].shape if hasattr(sample[5], "shape") else type(sample[5]))
+
+    images, initial_state, action_chunk, action_is_pad, instruction_text = sample
+
+    print("images type:", type(images))
+    print("3rd_person shape:", images["3rd_person"].shape)
+    print("initial_state shape:", initial_state.shape)
+    print("action_chunk shape:", action_chunk.shape)
+    print("action_is_pad shape:", action_is_pad.shape)
+    print("instruction_text:", instruction_text)
